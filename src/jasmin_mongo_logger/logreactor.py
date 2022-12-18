@@ -19,14 +19,14 @@ import logging
 
 
 class LogReactor:
-    def __init__(self, mongo_connection_string: str, log_database: str, log_collection: str,amqp_broker_host: str="127.0.0.1", amqp_broker_port: int=5672, logPath: str = "/var/log"):
+    def __init__(self, mongo_connection_string: str, log_database: str, log_collection: str, amqp_broker_host: str = "127.0.0.1", amqp_broker_port: int = 5672, logPath: str = "/var/log"):
         self.AMQP_BROKER_HOST = amqp_broker_host
         self.AMQP_BROKER_PORT = amqp_broker_port
         self.MONGODB_CONNECTION_STRING = mongo_connection_string
         self.MONGODB_LOGS_DATABASE = log_database
         self.MONGODB_LOGS_COLLECTION = log_collection
         self.queue = {}
-        
+
         logFormatter = logging.Formatter(
             "%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s")
         rootLogger = logging.getLogger()
@@ -275,7 +275,7 @@ def startFromConsole():
             JASMIN_MONGO_LOGGER_LOG_PATH            =     /var/log      ")
 
     logReactor = LogReactor(
-        mongo_connection_string=os.getenv("MONGODB_CONNECTION_STRING"), 
+        mongo_connection_string=os.getenv("MONGODB_CONNECTION_STRING"),
         log_database=os.getenv("MONGODB_LOGS_DATABASE"),
         log_collection=os.getenv("MONGODB_LOGS_COLLECTION"),
         amqp_broker_host=os.getenv("AMQP_BROKER_HOST", "127.0.0.1"),
