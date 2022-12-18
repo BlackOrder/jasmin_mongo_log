@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jasmin_mongo_logger"
+version = "0.0.1"
+authors = [
+  { name="BlackOrder", email="4302157+BlackOrder@users.noreply.github.com" },
+]
+description = "Log Jasmin SMS Gateway MT/MO to MongoDB Cluster."
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: OS Independent",
+]
+dependencies = [ "twisted", "txamqp", "smpp.pdu3", "pymongo", "dnspython" ]
+
+[project.scripts]
+jasminmongologd = "jasmin_mongo_logger.logreactor:startFromConsole"
+
+[project.urls]
+"Homepage" = "https://github.com/BlackOrder/jasmin_mongo_logger"
+"Bug Tracker" = "https://github.com/BlackOrder/jasmin_mongo_logger/issues"
