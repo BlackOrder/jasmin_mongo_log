@@ -1,0 +1,21 @@
+version: "3"
+name: jasmin-mongo
+services:
+  logger:
+    build: .
+    image: jasmin-mongo-logger
+    restart: always
+    networks:
+      - mongo-cluster_cluster_subnet
+    environment:
+      AMQP_BROKER_HOST: ${AMQP_BROKER_HOST:-rabbit-mq}
+      AMQP_BROKER_PORT: ${AMQP_BROKER_PORT:-5672}
+      MONGO_CONNECTION_STRING: mongodb://${MONGODB_USERNAME:?err}:${MONGODB_PASSWORD:?err}@${MONGODB_CLUSTER_HOSTS:?err}/?authSource=admin&replicaSet=rs
+      MONGO_LOGGER_DATABASE: ${MONGO_LOGGER_DATABASE:-logger}
+      MONGO_LOGGER_COLLECTION: ${MONGO_LOGGER_COLLECTION:-sms_log}
+      JASMIN_MONGO_LOGGER_LOG_PATH: ${JASMIN_MONGO_LOGGER_LOG_PATH:-/var/log/jasmin/}
+      JASMIN_MONGO_LOGGER_LOG_LEVEL: ${JASMIN_MONGO_LOGGER_LOG_LEVEL:-INFO}
+
+networks:
+  mongo-cluster_cluster_subnet:
+    external: true

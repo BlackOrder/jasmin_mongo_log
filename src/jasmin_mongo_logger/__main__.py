@@ -1,3 +1,3 @@
 from .logreactor import *
 
-startFromConsole()
+startFromCLI()
