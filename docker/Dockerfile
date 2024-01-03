@@ -1,6 +1,7 @@
 FROM python:3.11-slim-bullseye
 
-LABEL MAINTAINER="BlackOrder <4302157+BlackOrder@users.noreply.github.com>"
+LABEL org.opencontainers.image.authors="𝓑𝓵𝓪𝓬𝓴𝓞𝓻𝓭𝓮𝓻"
+LABEL org.opencontainers.image.source="https://github.com/BlackOrder/mongo-cluster"
 
 # add our user and group first to make sure their IDs get assigned consistently, regardless of whatever dependencies get added
 RUN groupadd -r jasmin && useradd -r -g jasmin jasmin
