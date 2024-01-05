@@ -555,9 +555,6 @@ class LogReactor:
 
 
 def console_entry_point():
-    # get the package name this script is running from
-    package_name = __name__.split(".")[0]
-    print(__name__)
     parser = argparse.ArgumentParser(
         description=f"Jasmin MongoDB Logger, Log Jasmin SMS Gateway MT/MO to MongoDB Cluster (can be one node).",
         epilog=f"Jasmin SMS Gateway MongoDB Logger v{package_version} - Made with <3 by @8lack0rder - github.com/BlackOrder/jasmin-mongo-logger",
