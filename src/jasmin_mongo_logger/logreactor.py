@@ -98,6 +98,7 @@ class LogReactor:
                 consoleHandler = logging.StreamHandler(sys.stdout)
                 consoleHandler.setFormatter(logFormatter)
                 rootLogger.addHandler(consoleHandler)
+                logging.info("Logging to console")
 
             # add the handler to the root logger if enabled
             if file_logging:
@@ -110,6 +111,7 @@ class LogReactor:
                 )
                 fileHandler.setFormatter(logFormatter)
                 rootLogger.addHandler(fileHandler)
+                logging.info("Logging to file: %s/%s" % (log_path, log_file))
         # Disable logging if console logging and file logging are disabled
         else:
             logging.disable(logging.CRITICAL)
@@ -139,16 +141,21 @@ class LogReactor:
         logging.info(" ")
 
         chan = yield conn.channel(1)
+        logging.debug("Channel opened")
 
         # Needed to clean up the connection
+        logging.debug("Cleaning up ...")
         self.conn = conn
         self.chan = chan
 
+        logging.debug("Opening channel")
         yield chan.channel_open()
 
+        logging.debug("Declaring queue")
         yield chan.queue_declare(queue="sms_logger_queue")
 
         # Bind to submit.sm.* and submit.sm.resp.* routes to track sent messages
+        logging.debug("Binding to submit.sm.* and submit.sm.resp.* routes")
         yield chan.queue_bind(
             queue="sms_logger_queue", exchange="messaging", routing_key="submit.sm.*"
         )
@@ -157,35 +164,56 @@ class LogReactor:
             exchange="messaging",
             routing_key="submit.sm.resp.*",
         )
+        logging.debug("Binding to dlr_thrower.* route")
         # Bind to dlr_thrower.* to track DLRs
         yield chan.queue_bind(
             queue="sms_logger_queue", exchange="messaging", routing_key="dlr_thrower.*"
         )
 
+        logging.debug("Starting consumer")
         yield chan.basic_consume(
             queue="sms_logger_queue", no_ack=False, consumer_tag="sms_logger"
         )
+        logging.debug("Consumer started")
         queue = yield conn.queue("sms_logger")
 
+        logging.debug("Connecting to MongoDB")
         mongosource = MongoDB(
             connection_string=self.MONGO_CONNECTION_STRING,
             database_name=self.MONGO_LOGGER_DATABASE,
         )
 
+        logging.debug("Checking MongoDB connection")
         if mongosource.startConnection() is not True:
+            logging.debug("MongoDB connection failed")
             return
 
+        logging.debug("MongoDB connection successful")
         # Wait for messages
         # This can be done through a callback ...
+        logging.debug("Starting message processing")
+
+        try:
+            logging.debug("Starting Daemon")
             while True:
+                logging.debug("Waiting for messages")
                 msg = yield queue.get()
 
+                logging.debug("Got message")
                 props = msg.content.properties
+                logging.debug("Processing message")
+                logging.debug(f"Message ID: {props['message-id']}")
+                logging.debug(f"Routing key: {msg.routing_key}")
+                logging.debug(f"Headers: {props['headers']}")
+                logging.debug(f"Payload: {msg.content.body}")
+                logging.debug(" ")
 
                 if (
                     msg.routing_key[:10] == "submit.sm."
                     and msg.routing_key[:15] != "submit.sm.resp."
                 ):
+                    # It's a submit_sm
+                    logging.debug("It's a submit_sm")
 
                     pdu = pickle.loads(msg.content.body)
                     pdu_count = 1
@@ -223,6 +251,8 @@ class LogReactor:
                                 "utf_16_be", "ignore"
                             ).encode("utf_8")
 
+                    # Save message in queue
+                    logging.debug("Saving message in queue")
                     self.queue[props["message-id"]] = {
                         "source_connector": source_connector,
                         "routed_cid": routed_cid,
@@ -236,6 +266,8 @@ class LogReactor:
                         "binary_message": binary_message,
                     }
 
+                    # Save message in MongoDB
+                    logging.debug("Saving message in MongoDB")
                     mongosource.update_one(
                         module=self.MONGO_LOGGER_COLLECTION,
                         sub_id=props["message-id"],
@@ -253,6 +285,8 @@ class LogReactor:
                         },
                     )
                 elif msg.routing_key[:15] == "submit.sm.resp.":
+                    # It's a submit_sm_resp
+                    logging.debug("It's a submit_sm_resp")
 
                     pdu = pickle.loads(msg.content.body)
                     if props["message-id"] not in self.queue:
@@ -273,6 +307,8 @@ class LogReactor:
                     if qmsg["short_message"] is None:
                         qmsg["short_message"] = ""
 
+                    # Update message status
+                    logging.debug("Updating message status in MongoDB")
                     mongosource.update_one(
                         module=self.MONGO_LOGGER_COLLECTION,
                         sub_id=props["message-id"],
@@ -294,6 +330,8 @@ class LogReactor:
                     )
 
                 elif msg.routing_key[:12] == "dlr_thrower.":
+                    # It's a dlr_thrower
+                    logging.debug("It's a dlr_thrower")
 
                     if props["headers"]["message_status"][:5] == "ESME_":
                         # Ignore dlr from submit_sm_resp
@@ -301,6 +339,8 @@ class LogReactor:
                         chan.basic_ack(delivery_tag=msg.delivery_tag)
                         continue
 
+                    # It's a dlr
+                    logging.debug("It's a dlr")
                     if props["message-id"] not in self.queue:
                         logging.error(
                             f" Got dlr of an unknown submit_sm: {props['message-id']}"
@@ -308,6 +348,8 @@ class LogReactor:
                         chan.basic_ack(delivery_tag=msg.delivery_tag)
                         continue
 
+                    # Update message status
+                    logging.debug("Updating message status in MongoDB")
                     qmsg = self.queue[props["message-id"]]
 
                     mongosource.update_one(
@@ -323,6 +365,8 @@ class LogReactor:
                     logging.error(f" unknown route: {msg.routing_key}")
 
                 chan.basic_ack(delivery_tag=msg.delivery_tag)
+                logging.debug("Message processed")
+                logging.debug(" ")
 
         except KeyboardInterrupt:
             logging.critical("KeyboardInterrupt")
@@ -339,20 +383,32 @@ class LogReactor:
         logging.critical("Cleaning up ...")
 
         self.cleanConnectionBreak()
+        logging.debug("Connection closed")
 
+        logging.debug("Stopping reactor")
         if reactor.running:
+            logging.debug("Stopping reactor")
             reactor.stop()
 
+        logging.debug("Waiting for reactor to stop")
         sleep(3)
+        logging.debug("Reactor stopped")
 
     def cleanConnectionBreak(self):
         # A clean way to tear down and stop
+        logging.debug("Cleaning up connection")
         yield self.chan.basic_cancel("sms_logger")
+        logging.debug("Closing channel")
         yield self.chan.channel_close()
+        logging.debug("Closing channel 0")
         chan0 = yield self.conn.channel(0)
+        logging.debug("Closing connection")
         yield chan0.connection_close()
+        logging.debug("Cleaning up done")
 
     def rabbitMQConnect(self):
+        # Connect to RabbitMQ
+        logging.debug("Connecting to RabbitMQ")
 
         host = self.AMQP_BROKER_HOST
         port = self.AMQP_BROKER_PORT
@@ -360,8 +416,20 @@ class LogReactor:
         username = self.AMQP_BROKER_USERNAME
         password = self.AMQP_BROKER_PASSWORD
         heartbeat = self.AMQP_BROKER_HEARTBEAT
+
+        logging.debug(
+            f"Credentials:\n\
+            Host: {host}\n\
+            Port: {port}\n\
+            Vhost: {vhost}\n\
+            Username: {username}\n\
+            Password: {password}\n\
+            Heartbeat: {heartbeat}"
+        )
+
         # get the path to the spec file
         spec_file = pkg_resources.resource_filename(package_name, "specs/amqp0-9-1.xml")
+        logging.debug(f"Using spec file: {spec_file}")
 
         spec = txamqp.spec.load(spec_file)
 
@@ -371,6 +439,7 @@ class LogReactor:
             self.tearDown()
 
         # Connect and authenticate
+        logging.debug("Connecting to broker")
         d = ClientCreator(
             reactor,
             AMQClient,
@@ -379,9 +448,16 @@ class LogReactor:
             spec=spec,
             heartbeat=heartbeat,
         ).connectTCP(host, port)
+
+        # Add authentication
+        logging.debug("Adding authentication")
         d.addCallback(self.gotConnection, username, password)
 
+        # Catch errors
         d.addErrback(whoops)
+
+        # Run the reactor
+        logging.debug("Running reactor")
         reactor.run()
 
 
