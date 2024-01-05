@@ -119,7 +119,7 @@ class LogReactor:
 
     def startReactor(self):
         logging.info("*********************************************")
-        logging.info(f"::Jasmin MongoDB Logger {package_version}::")
+        logging.info(f"::Jasmin MongoDB Logger v{package_version}::")
         logging.info("")
         logging.info("Starting reactor ...")
         logging.info("*********************************************")
