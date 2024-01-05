@@ -20,6 +20,7 @@ from .mongodb import MongoDB
 
 # get the package name this script is running from
 package_name = __name__.split(".")[0]
+package_version = pkg_resources.get_distribution(package_name).version
 
 NODEFAULT: str = "REQUIRED: NO_DEFAULT"
 DEFAULT_AMQP_BROKER_HOST: str = os.getenv("AMQP_BROKER_HOST", "127.0.0.1")
@@ -118,7 +119,7 @@ class LogReactor:
 
     def startReactor(self):
         logging.info("*********************************************")
-        logging.info("::Jasmin MongoDB Logger::")
+        logging.info(f"::Jasmin MongoDB Logger {package_version}::")
         logging.info("")
         logging.info("Starting reactor ...")
         logging.info("*********************************************")
@@ -467,14 +468,14 @@ def console_entry_point():
     print(__name__)
     parser = argparse.ArgumentParser(
         description=f"Jasmin MongoDB Logger, Log Jasmin SMS Gateway MT/MO to MongoDB Cluster (can be one node).",
-        epilog=f"Jasmin SMS Gateway MongoDB Logger v{pkg_resources.get_distribution(package_name).version} - Made with <3 by @8lack0rder - github.com/BlackOrder/jasmin-mongo-logger",
+        epilog=f"Jasmin SMS Gateway MongoDB Logger v{package_version} - Made with <3 by @8lack0rder - github.com/BlackOrder/jasmin-mongo-logger",
     )
 
     parser.add_argument(
         "-v",
         "--version",
         action="version",
-        version=f"%(prog)s {pkg_resources.get_distribution(package_name).version}",
+        version=f"%(prog)s {package_version}",
     )
 
     parser.add_argument(
