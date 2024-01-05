@@ -23,6 +23,15 @@ package_name = __name__.split(".")[0]
 package_version = pkg_resources.get_distribution(package_name).version
 
 NODEFAULT: str = "REQUIRED: NO_DEFAULT"
+DEFAULT_RETRY_ON_CONNECTION_ERROR: bool = os.getenv("RETRY_ON_CONNECTION_ERROR", "True").lower() in (
+    "yes",
+    "true",
+    "t",
+    "1",
+)
+DEFAULT_RETRY_COUNT: int = int(os.getenv("RETRY_COUNT", "0"))
+DEFAULT_RETRY_TIMEOUT: int = int(os.getenv("RETRY_TIMEOUT", "5"))
+
 DEFAULT_AMQP_BROKER_HOST: str = os.getenv("AMQP_BROKER_HOST", "127.0.0.1")
 DEFAULT_AMQP_BROKER_PORT: int = int(os.getenv("AMQP_BROKER_PORT", "5672"))
 DEFAULT_AMQP_BROKER_VHOST: str = os.getenv("AMQP_BROKER_VHOST", "/")
@@ -63,6 +72,9 @@ class LogReactor:
         amqp_broker_username: str = DEFAULT_AMQP_BROKER_USERNAME,
         amqp_broker_password: str = DEFAULT_AMQP_BROKER_PASSWORD,
         amqp_broker_heartbeat: int = DEFAULT_AMQP_BROKER_HEARTBEAT,
+        retry_on_connection_error: bool = DEFAULT_RETRY_ON_CONNECTION_ERROR,
+        retry_count: int = DEFAULT_RETRY_COUNT,
+        retry_timeout: int = DEFAULT_RETRY_TIMEOUT,
         log_level: str = DEFAULT_LOG_LEVEL,
         log_path: str = DEFAULT_LOG_PATH,
         log_file: str = DEFAULT_LOG_FILE,
@@ -70,6 +82,14 @@ class LogReactor:
         file_logging: bool = DEFAULT_FILE_LOGGING,
         console_logging: bool = DEFAULT_CONSOLE_LOGGING,
     ):
+        self.RETRY_ON_CONNECTION_ERROR = retry_on_connection_error
+        self.RETRY_COUNT = retry_count
+        self.RETRY_TIMEOUT = retry_timeout
+
+        # 0 or any negative integer means retry forever. Add 1 to retry count in case of positive integer to account for the first try
+        if self.RETRY_COUNT > 0:
+            self.RETRY_COUNT += 1
+
         self.AMQP_BROKER_HOST = amqp_broker_host
         self.AMQP_BROKER_PORT = amqp_broker_port
         self.AMQP_BROKER_VHOST = amqp_broker_vhost
@@ -80,60 +100,87 @@ class LogReactor:
         self.MONGO_CONNECTION_STRING = mongo_connection_string
         self.MONGO_LOGGER_DATABASE = logger_database
         self.MONGO_LOGGER_COLLECTION = logger_collection
+
+        self.LOG_LEVEL = log_level
+        self.LOG_PATH = log_path
+        self.LOG_FILE = log_file
+        self.LOG_ROTATE = log_rotate
+        self.FILE_LOGGING = file_logging
+        self.CONSOLE_LOGGING = console_logging
+
         self.queue = {}
 
         # Set up logging
-        log_format = os.getenv("JASMIN_MONGO_LOGGER_LOG_FORMAT", DEFAULT_LOG_FORMAT)
-        log_date_format = os.getenv(
+        self.LOG_FORMAT = os.getenv("JASMIN_MONGO_LOGGER_LOG_FORMAT", DEFAULT_LOG_FORMAT)
+        self.LOG_DATE_FORMAT = os.getenv(
             "JASMIN_MONGO_LOGGER_LOG_DATE_FORMAT", DEFAULT_LOG_DATE_FORMAT
         )
 
         # Enable logging if console logging or file logging is enabled
-        if console_logging or file_logging:
-            logFormatter = logging.Formatter(log_format, datefmt=log_date_format)
+        if self.FILE_LOGGING or self.CONSOLE_LOGGING:
+            logFormatter = logging.Formatter(self.LOG_FORMAT, datefmt=self.LOG_DATE_FORMAT)
             rootLogger = logging.getLogger()
-            rootLogger.setLevel(log_level)
+            rootLogger.setLevel(self.LOG_LEVEL)
 
             # add the handler to the root logger if enabled
-            if console_logging:
+            if self.CONSOLE_LOGGING:
                 consoleHandler = logging.StreamHandler(sys.stdout)
                 consoleHandler.setFormatter(logFormatter)
                 rootLogger.addHandler(consoleHandler)
-                logging.info("Logging to console")
+                logging.debug("Logging to console")
 
             # add the handler to the root logger if enabled
-            if file_logging:
-                if not os.path.exists(log_path):
-                    os.makedirs(log_path)
+            if self.FILE_LOGGING:
+                if not os.path.exists(self.LOG_PATH):
+                    os.makedirs(self.LOG_PATH)
 
                 fileHandler = logging.handlers.TimedRotatingFileHandler(
-                    filename="%s/%s" % (log_path.rstrip("/"), log_file.lstrip("/")),
-                    when=log_rotate,
+                    filename="%s/%s" % (self.LOG_PATH.rstrip("/"), self.LOG_FILE.lstrip("/")),
+                    when=self.LOG_ROTATE,
                 )
                 fileHandler.setFormatter(logFormatter)
                 rootLogger.addHandler(fileHandler)
-                logging.info("Logging to file: %s/%s" % (log_path, log_file))
+                logging.debug("Logging to file: %s/%s" % (self.LOG_PATH, self.LOG_FILE))
         # Disable logging if console logging and file logging are disabled
         else:
             logging.disable(logging.CRITICAL)
 
     def startReactor(self):
+        logging.info(" ")
         logging.info("*********************************************")
         logging.info(f"::Jasmin MongoDB Logger v{package_version}::")
-        logging.info("")
-        logging.info("Starting reactor ...")
-        logging.info("*********************************************")
         logging.info(" ")
+        logging.info("::Configuration::")
+        logging.info(f"AMQP Broker Host: {self.AMQP_BROKER_HOST}")
+        logging.info(f"AMQP Broker Port: {self.AMQP_BROKER_PORT}")
+        logging.info(f"AMQP Broker VHost: {self.AMQP_BROKER_VHOST}")
+        logging.info(f"AMQP Broker Username: {self.AMQP_BROKER_USERNAME}")
+        logging.info(f"AMQP Broker Password: {self.AMQP_BROKER_PASSWORD}")
+        logging.info(f"AMQP Broker Heartbeat: {self.AMQP_BROKER_HEARTBEAT}")
+        logging.info(f"Retry on connection error: {'Yes' if self.RETRY_ON_CONNECTION_ERROR else 'No'}")
+        logging.info(f"Retry count: {'Forever' if self.RETRY_COUNT <= 0 else (self.RETRY_COUNT - 1)}")
+        logging.info(f"Retry timeout: {self.RETRY_TIMEOUT}s")
+        logging.info(f"MongoDB Connection String: {self.MONGO_CONNECTION_STRING}")
+        logging.info(f"MongoDB Logs Database: {self.MONGO_LOGGER_DATABASE}")
+        logging.info(f"MongoDB Logs Collection: {self.MONGO_LOGGER_COLLECTION}")
+        logging.info(f"Log Level: {self.LOG_LEVEL}")
+        logging.info(f"Log Path: {self.LOG_PATH}")
+        logging.info(f"Log File: {self.LOG_FILE}")
+        logging.info(f"Log Rotate: {self.LOG_ROTATE}")
+        logging.info(f"File Logging: {'Enabled' if self.FILE_LOGGING else 'Disabled'}")
+        logging.info(f"Console Logging: {'Enabled' if self.CONSOLE_LOGGING else 'Disabled'}")
+        logging.info("*********************************************")
 
-        try:
-            self.rabbitMQConnect()
-        except Exception as err:
-            logging.critical("Error connecting to RabbitMQ server: ")
-            logging.critical(err)
-            self.tearDown()
+        # Connect to RabbitMQ
+        self.rabbitMQConnect()
+        
+        # Run the reactor
+        logging.debug("Running reactor")
+        reactor.run()
 
     @inlineCallbacks
     def gotConnection(self, conn, username, password):
+        logging.info(" ")
         logging.info(f"Connected to broker, authenticating: {username}")
 
         yield conn.start({"LOGIN": username, "PASSWORD": password})
@@ -371,15 +418,73 @@ class LogReactor:
 
         except KeyboardInterrupt:
             logging.critical("KeyboardInterrupt")
+            # mark as do not reconnect
+            self.RETRY_ON_CONNECTION_ERROR = False
         except Exception as err:
-            logging.critical("Error: ")
-            logging.critical(err)
+            logging.critical("Error")
+            logging.debug('Error: ')
+            logging.debug(err)
         except:
             logging.critical("Unknown error")
+        
+        # check if we should reconnect
+        if not self.RETRY_ON_CONNECTION_ERROR or self.RETRY_COUNT == 1:
+            self.StopReactor()
+            return
+        
+        # decrement retry count
+        self.RETRY_COUNT -= 1
 
-        self.tearDown()
+        # clean up
+        logging.debug("Cleaning up")
+        self.cleanConnectionBreak()
+        logging.debug("Cleaning up done")
 
-    def tearDown(self):
+        # Restart the connection in RETRY_TIMEOUT seconds
+        logging.info(f"Reconnecting in {self.RETRY_TIMEOUT} seconds ...")
+        try:
+            yield reactor.callLater(self.RETRY_TIMEOUT, self.rabbitMQConnect)
+        except KeyboardInterrupt:
+            logging.critical("KeyboardInterrupt")
+            self.StopReactor()
+
+
+    @inlineCallbacks
+    def ConError(self, err):
+        logging.critical("Error connecting to RabbitMQ server")
+        logging.debug("Error: ")
+        logging.debug(err)
+        self.cleanConnectionBreak()
+
+        # check if we should reconnect
+        if not self.RETRY_ON_CONNECTION_ERROR or self.RETRY_COUNT == 1:
+            self.StopReactor()
+            return
+        
+        # decrement retry count
+        self.RETRY_COUNT -= 1
+
+        # Wait for RETRY_TIMEOUT seconds before trying to reconnect, but listen for Ctrl+C
+        logging.info(f"Reconnecting in {self.RETRY_TIMEOUT} seconds ...")
+        try:
+            yield reactor.callLater(self.RETRY_TIMEOUT, self.rabbitMQConnect)
+        except KeyboardInterrupt:
+            logging.critical("KeyboardInterrupt")
+            self.StopReactor()
+
+    def cleanConnectionBreak(self):
+        # A clean way to tear down and stop
+        logging.debug("Cleaning up connection")
+        yield self.chan.basic_cancel("sms_logger")
+        logging.debug("Closing channel")
+        yield self.chan.channel_close()
+        logging.debug("Closing channel 0")
+        chan0 = yield self.conn.channel(0)
+        logging.debug("Closing connection")
+        yield chan0.connection_close()
+        logging.debug("Cleaning up done")
+
+    def StopReactor(self):
         logging.critical("Shutting down !!!")
         logging.critical("Cleaning up ...")
 
@@ -395,22 +500,10 @@ class LogReactor:
         sleep(3)
         logging.debug("Reactor stopped")
 
-    def cleanConnectionBreak(self):
-        # A clean way to tear down and stop
-        logging.debug("Cleaning up connection")
-        yield self.chan.basic_cancel("sms_logger")
-        logging.debug("Closing channel")
-        yield self.chan.channel_close()
-        logging.debug("Closing channel 0")
-        chan0 = yield self.conn.channel(0)
-        logging.debug("Closing connection")
-        yield chan0.connection_close()
-        logging.debug("Cleaning up done")
-
     def rabbitMQConnect(self):
         # Connect to RabbitMQ
-        logging.debug("Connecting to RabbitMQ")
-
+        logging.debug(" ")
+        logging.debug("Creating a new RabbitMQ connection")
         host = self.AMQP_BROKER_HOST
         port = self.AMQP_BROKER_PORT
         vhost = self.AMQP_BROKER_VHOST
@@ -430,36 +523,35 @@ class LogReactor:
 
         # get the path to the spec file
         spec_file = pkg_resources.resource_filename(package_name, "specs/amqp0-9-1.xml")
-        logging.debug(f"Using spec file: {spec_file}")
+        logging.debug(f"Got spec file: {spec_file}")
 
+        # Load the spec file
+        logging.debug("Loading spec file")
         spec = txamqp.spec.load(spec_file)
 
-        def whoops(err):
-            logging.critical("Error connecting to RabbitMQ server: ")
-            logging.critical(err)
-            self.tearDown()
-
-        # Connect and authenticate
-        logging.debug("Connecting to broker")
-        d = ClientCreator(
+        # Create a reactor client
+        logging.debug("Creating client")
+        client = ClientCreator(
             reactor,
             AMQClient,
             delegate=TwistedDelegate(),
             vhost=vhost,
             spec=spec,
             heartbeat=heartbeat,
-        ).connectTCP(host, port)
+        )
+
+        # Connect to RabbitMQ
+        logging.debug("Connecting to RabbitMQ")
+        conn = client.connectTCP(host, port)
 
         # Add authentication
-        logging.debug("Adding authentication")
-        d.addCallback(self.gotConnection, username, password)
+        logging.debug("Adding authentication callback")
+        conn.addCallback(self.gotConnection, username, password)
 
         # Catch errors
-        d.addErrback(whoops)
+        logging.debug("Adding error callback")
+        conn.addErrback(self.ConError)
 
-        # Run the reactor
-        logging.debug("Running reactor")
-        reactor.run()
 
 
 def console_entry_point():
@@ -530,6 +622,33 @@ def console_entry_point():
         required=False,
         default=DEFAULT_AMQP_BROKER_HEARTBEAT,
         help=f"AMQP Broker Heartbeat (default:{DEFAULT_AMQP_BROKER_HEARTBEAT})",
+    )
+
+    parser.add_argument(
+        "--retry-on-connection-error",
+        dest="retry_on_connection_error",
+        required=False,
+        default=DEFAULT_RETRY_ON_CONNECTION_ERROR,
+        action=argparse.BooleanOptionalAction,
+        help=f"Retry on connection error (default:{DEFAULT_RETRY_ON_CONNECTION_ERROR})",
+    )
+    
+    parser.add_argument(
+        "--retry-count",
+        type=int,
+        dest="retry_count",
+        required=False,
+        default=DEFAULT_RETRY_COUNT,
+        help=f"Retry count (default:{DEFAULT_RETRY_COUNT}) - 0 or any negative integer means retry forever",
+    )
+
+    parser.add_argument(
+        "--retry-timeout",
+        type=int,
+        dest="retry_timeout",
+        required=False,
+        default=DEFAULT_RETRY_TIMEOUT,
+        help=f"Retry timeout in seconds (default:{DEFAULT_RETRY_TIMEOUT}s)",
     )
 
     parser.add_argument(
