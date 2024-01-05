@@ -17,6 +17,9 @@ from txamqp.protocol import AMQClient
 
 from jasmin_mongo_logger.mongodb import MongoDB
 
+# get the package name this script is running from
+package_name = __name__.split(".")[0]
+
 NODEFAULT: str = "REQUIRED: NO_DEFAULT"
 DEFAULT_AMQP_BROKER_HOST: str = "127.0.0.1"
 DEFAULT_AMQP_BROKER_PORT: int = 5672
@@ -268,8 +271,7 @@ class LogReactor:
         vhost = '/'
         username = 'guest'
         password = 'guest'
-        spec_file = pkg_resources.resource_filename(
-            'jasmin_mongo_logger', 'amqp0-9-1.xml')
+        spec_file = pkg_resources.resource_filename(package_name, "specs/amqp0-9-1.xml")
 
         spec = txamqp.spec.load(spec_file)
 
