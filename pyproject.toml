@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jasmin_mongo_logger"
-version = "0.1.1"
+version = "0.2.0"
 authors = [
   { name = "BlackOrder", email = "4302157+BlackOrder@users.noreply.github.com" },
 ]
@@ -24,3 +24,4 @@ jasminmongologd = "jasmin_mongo_logger:console_entry_point"
 [project.urls]
 "Homepage" = "https://github.com/BlackOrder/jasmin_mongo_logger"
 "Bug Tracker" = "https://github.com/BlackOrder/jasmin_mongo_logger/issues"
+"Source Code" = "https://github.com/BlackOrder/jasmin_mongo_logger"
