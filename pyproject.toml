@@ -19,7 +19,7 @@ classifiers = [
 dependencies = ["twisted", "txamqp", "smpp.pdu3", "pymongo", "dnspython"]
 
 [project.scripts]
-jasminmongologd = "jasmin_mongo_logger.logreactor:startFromCLI"
+jasminmongologd = "jasmin_mongo_logger:console_entry_point"
 
 [project.urls]
 "Homepage" = "https://github.com/BlackOrder/jasmin_mongo_logger"

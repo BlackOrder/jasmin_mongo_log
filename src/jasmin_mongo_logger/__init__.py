@@ -1,1 +1,6 @@
-from jasmin_mongo_logger.logreactor import LogReactor
+from .logreactor import console_entry_point
+
+
+if __name__ == "__main__":
+    console_entry_point()
+

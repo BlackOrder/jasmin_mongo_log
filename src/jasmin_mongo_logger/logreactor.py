@@ -1,67 +1,118 @@
 import binascii
 import logging
+import logging.handlers
 import os
 import pickle as pickle
 from datetime import datetime
+import sys
 from time import sleep
-
+import argparse
 import pkg_resources
 import txamqp.spec
 from smpp.pdu.pdu_types import DataCoding
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks
 from twisted.internet.protocol import ClientCreator
-from twisted.python import log
 from txamqp.client import TwistedDelegate
 from txamqp.protocol import AMQClient
 
-from jasmin_mongo_logger.mongodb import MongoDB
+from .mongodb import MongoDB
 
 # get the package name this script is running from
 package_name = __name__.split(".")[0]
 
 NODEFAULT: str = "REQUIRED: NO_DEFAULT"
-DEFAULT_AMQP_BROKER_HOST: str = "127.0.0.1"
-DEFAULT_AMQP_BROKER_PORT: int = 5672
-DEFAULT_LOG_PATH: str = "/var/log/jasmin/"
-DEFAULT_LOG_LEVEL: str = "INFO"
+DEFAULT_AMQP_BROKER_HOST: str = os.getenv("AMQP_BROKER_HOST", "127.0.0.1")
+DEFAULT_AMQP_BROKER_PORT: int = int(os.getenv("AMQP_BROKER_PORT", "5672"))
+DEFAULT_AMQP_BROKER_VHOST: str = os.getenv("AMQP_BROKER_VHOST", "/")
+DEFAULT_AMQP_BROKER_USERNAME: str = os.getenv("AMQP_BROKER_USERNAME", "guest")
+DEFAULT_AMQP_BROKER_PASSWORD: str = os.getenv("AMQP_BROKER_PASSWORD", "guest")
+DEFAULT_AMQP_BROKER_HEARTBEAT: int = int(os.getenv("AMQP_BROKER_HEARTBEAT", "0"))
+
+DEFAULT_LOG_LEVEL: str = os.getenv("JASMIN_MONGO_LOGGER_LOG_LEVEL", "INFO").upper()
+DEFAULT_LOG_PATH: str = os.getenv("JASMIN_MONGO_LOGGER_LOG_PATH", "/var/log/jasmin")
+DEFAULT_LOG_FILE: str = os.getenv(
+    "JASMIN_MONGO_LOGGER_LOG_FILE", "%s.log" % package_name
+)
+DEFAULT_LOG_ROTATE: str = os.getenv("JASMIN_MONGO_LOGGER_LOG_ROTATE", "midnight")
+DEFAULT_LOG_FORMAT: str = os.getenv(
+    "JASMIN_MONGO_LOGGER_LOG_FORMAT",
+    "%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s",
+)
+DEFAULT_LOG_DATE_FORMAT: str = os.getenv(
+    "JASMIN_MONGO_LOGGER_LOG_DATE_FORMAT", "%Y-%m-%d %H:%M:%S"
+)
+DEFAULT_FILE_LOGGING: bool = os.getenv(
+    "JASMIN_MONGO_LOGGER_FILE_LOGGING", "True"
+).lower() in ("yes", "true", "t", "1")
+DEFAULT_CONSOLE_LOGGING: bool = os.getenv(
+    "JASMIN_MONGO_LOGGER_CONSOLE_LOGGING", "True"
+).lower() in ("yes", "true", "t", "1")
 
 
 class LogReactor:
     def __init__(
-        self, mongo_connection_string: str,
+        self,
+        mongo_connection_string: str,
         logger_database: str,
         logger_collection: str,
         amqp_broker_host: str = DEFAULT_AMQP_BROKER_HOST,
         amqp_broker_port: int = DEFAULT_AMQP_BROKER_PORT,
+        amqp_broker_vhost: str = DEFAULT_AMQP_BROKER_VHOST,
+        amqp_broker_username: str = DEFAULT_AMQP_BROKER_USERNAME,
+        amqp_broker_password: str = DEFAULT_AMQP_BROKER_PASSWORD,
+        amqp_broker_heartbeat: int = DEFAULT_AMQP_BROKER_HEARTBEAT,
+        log_level: str = DEFAULT_LOG_LEVEL,
         log_path: str = DEFAULT_LOG_PATH,
-        log_level: str = DEFAULT_LOG_LEVEL
+        log_file: str = DEFAULT_LOG_FILE,
+        log_rotate: str = DEFAULT_LOG_ROTATE,
+        file_logging: bool = DEFAULT_FILE_LOGGING,
+        console_logging: bool = DEFAULT_CONSOLE_LOGGING,
     ):
         self.AMQP_BROKER_HOST = amqp_broker_host
         self.AMQP_BROKER_PORT = amqp_broker_port
+        self.AMQP_BROKER_VHOST = amqp_broker_vhost
+        self.AMQP_BROKER_USERNAME = amqp_broker_username
+        self.AMQP_BROKER_PASSWORD = amqp_broker_password
+        self.AMQP_BROKER_HEARTBEAT = amqp_broker_heartbeat
+
         self.MONGO_CONNECTION_STRING = mongo_connection_string
         self.MONGO_LOGGER_DATABASE = logger_database
         self.MONGO_LOGGER_COLLECTION = logger_collection
         self.queue = {}
 
-        logFormatter = logging.Formatter(
-            "%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s")
-        rootLogger = logging.getLogger()
-        rootLogger.setLevel(log_level)
+        # Set up logging
+        log_format = os.getenv("JASMIN_MONGO_LOGGER_LOG_FORMAT", DEFAULT_LOG_FORMAT)
+        log_date_format = os.getenv(
+            "JASMIN_MONGO_LOGGER_LOG_DATE_FORMAT", DEFAULT_LOG_DATE_FORMAT
+        )
 
-        consoleHandler = logging.StreamHandler()
-        consoleHandler.setLevel(log_level)
-        consoleHandler.setFormatter(logFormatter)
-        rootLogger.addHandler(consoleHandler)
+        # Enable logging if console logging or file logging is enabled
+        if console_logging or file_logging:
+            logFormatter = logging.Formatter(log_format, datefmt=log_date_format)
+            rootLogger = logging.getLogger()
+            rootLogger.setLevel(log_level)
 
-        if not os.path.exists(log_path):
-            os.makedirs(log_path)
+            # add the handler to the root logger if enabled
+            if console_logging:
+                consoleHandler = logging.StreamHandler(sys.stdout)
+                consoleHandler.setFormatter(logFormatter)
+                rootLogger.addHandler(consoleHandler)
 
-        fileHandler = logging.FileHandler(
-            f"{log_path.rstrip('/')}/jasmin_mongo_logger.log")
-        fileHandler.setLevel(log_level)
-        fileHandler.setFormatter(logFormatter)
-        rootLogger.addHandler(fileHandler)
+            # add the handler to the root logger if enabled
+            if file_logging:
+                if not os.path.exists(log_path):
+                    os.makedirs(log_path)
+
+                fileHandler = logging.handlers.TimedRotatingFileHandler(
+                    filename="%s/%s" % (log_path.rstrip("/"), log_file.lstrip("/")),
+                    when=log_rotate,
+                )
+                fileHandler.setFormatter(logFormatter)
+                rootLogger.addHandler(fileHandler)
+        # Disable logging if console logging and file logging are disabled
+        else:
+            logging.disable(logging.CRITICAL)
 
     def startReactor(self):
         logging.info("*********************************************")
@@ -268,9 +319,11 @@ class LogReactor:
     def rabbitMQConnect(self):
         host = self.AMQP_BROKER_HOST
         port = self.AMQP_BROKER_PORT
-        vhost = '/'
-        username = 'guest'
-        password = 'guest'
+        vhost = self.AMQP_BROKER_VHOST
+        username = self.AMQP_BROKER_USERNAME
+        password = self.AMQP_BROKER_PASSWORD
+        heartbeat = self.AMQP_BROKER_HEARTBEAT
+        # get the path to the spec file
         spec_file = pkg_resources.resource_filename(package_name, "specs/amqp0-9-1.xml")
 
         spec = txamqp.spec.load(spec_file)
@@ -281,73 +334,170 @@ class LogReactor:
             self.tearDown()
 
         # Connect and authenticate
-        d = ClientCreator(reactor,
-                          AMQClient,
-                          delegate=TwistedDelegate(),
-                          vhost=vhost,
-                          spec=spec,
-                          heartbeat=5).connectTCP(host, port)
+        d = ClientCreator(
+            reactor,
+            AMQClient,
+            delegate=TwistedDelegate(),
+            vhost=vhost,
+            spec=spec,
+            heartbeat=heartbeat,
+        ).connectTCP(host, port)
         d.addCallback(self.gotConnection, username, password)
 
         d.addErrback(whoops)
         reactor.run()
 
 
-def startFromCLI():
-    import argparse
+def console_entry_point():
+    # get the package name this script is running from
+    package_name = __name__.split(".")[0]
+    print(__name__)
     parser = argparse.ArgumentParser(
-        description=f"Jasmin MongoDB Logger, Log Jasmin SMS Gateway MT/MO to MongoDB Cluster (can be one node).")
+        description=f"Jasmin MongoDB Logger, Log Jasmin SMS Gateway MT/MO to MongoDB Cluster (can be one node).",
+        epilog=f"Jasmin SMS Gateway MongoDB Logger v{pkg_resources.get_distribution(package_name).version} - Made with <3 by @8lack0rder - github.com/BlackOrder/jasmin-mongo-logger",
+    )
 
-    parser.add_argument('-v', '--version', action='version',
-                        version=f'%(prog)s {pkg_resources.get_distribution("jasmin_mongo_logger").version}')
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"%(prog)s {pkg_resources.get_distribution(package_name).version}",
+    )
 
-    parser.add_argument('--amqp_host', type=str,
-                        dest='amqp_broker_host',
-                        required=False,
-                        default=os.getenv("AMQP_BROKER_HOST",
-                                          DEFAULT_AMQP_BROKER_HOST),
-                        help=f'AMQP Broker Host (default:{DEFAULT_AMQP_BROKER_HOST})')
+    parser.add_argument(
+        "--amqp-host",
+        type=str,
+        dest="amqp_broker_host",
+        required=False,
+        default=DEFAULT_AMQP_BROKER_HOST,
+        help=f"AMQP Broker Host (default:{DEFAULT_AMQP_BROKER_HOST})",
+    )
 
-    parser.add_argument('--amqp_port', type=int,
-                        dest='amqp_broker_port',
-                        required=False,
-                        default=os.getenv("AMQP_BROKER_PORT",
-                                          DEFAULT_AMQP_BROKER_PORT),
-                        help=f'AMQP Broker Port (default:{DEFAULT_AMQP_BROKER_PORT})')
+    parser.add_argument(
+        "--amqp-port",
+        type=int,
+        dest="amqp_broker_port",
+        required=False,
+        default=DEFAULT_AMQP_BROKER_PORT,
+        help=f"AMQP Broker Port (default:{DEFAULT_AMQP_BROKER_PORT})",
+    )
 
-    parser.add_argument('--connection_string', type=str,
-                        dest='mongo_connection_string',
-                        required=os.getenv(
-                            "MONGO_CONNECTION_STRING") is None,
-                        default=os.getenv("MONGO_CONNECTION_STRING"),
-                        help=f'MongoDB Connection String (Default: ** Required **)')
+    parser.add_argument(
+        "--amqp-vhost",
+        type=str,
+        dest="amqp_broker_vhost",
+        required=False,
+        default=DEFAULT_AMQP_BROKER_VHOST,
+        help=f"AMQP Broker VHost (default:{DEFAULT_AMQP_BROKER_VHOST})",
+    )
 
-    parser.add_argument('--db', type=str,
-                        dest='logger_database',
-                        required=os.getenv("MONGO_LOGGER_DATABASE") is None,
-                        default=os.getenv("MONGO_LOGGER_DATABASE"),
-                        help=f'MongoDB Logs Database (Default: ** Required **)')
+    parser.add_argument(
+        "--amqp-username",
+        type=str,
+        dest="amqp_broker_username",
+        required=False,
+        default=DEFAULT_AMQP_BROKER_USERNAME,
+        help=f"AMQP Broker Username (default:{DEFAULT_AMQP_BROKER_USERNAME})",
+    )
 
-    parser.add_argument('--collection', type=str,
-                        dest='logger_collection',
-                        required=os.getenv(
-                            "MONGO_LOGGER_COLLECTION") is None,
-                        default=os.getenv("MONGO_LOGGER_COLLECTION"),
-                        help=f'MongoDB Logs Collection (Default: ** Required **)')
+    parser.add_argument(
+        "--amqp-password",
+        type=str,
+        dest="amqp_broker_password",
+        required=False,
+        default=DEFAULT_AMQP_BROKER_PASSWORD,
+        help=f"AMQP Broker Password (default:{DEFAULT_AMQP_BROKER_PASSWORD})",
+    )
 
-    parser.add_argument('--log_path', type=str,
-                        dest='log_path',
-                        required=False,
-                        default=os.getenv("JASMIN_MONGO_LOGGER_LOG_PATH",
-                                          DEFAULT_LOG_PATH),
-                        help=f'Log Path (default:{DEFAULT_LOG_PATH})')
+    parser.add_argument(
+        "--amqp-heartbeat",
+        type=int,
+        dest="amqp_broker_heartbeat",
+        required=False,
+        default=DEFAULT_AMQP_BROKER_HEARTBEAT,
+        help=f"AMQP Broker Heartbeat (default:{DEFAULT_AMQP_BROKER_HEARTBEAT})",
+    )
 
-    parser.add_argument('--log_level', type=str,
-                        dest='log_level',
-                        required=False,
-                        default=os.getenv("JASMIN_MONGO_LOGGER_LOG_LEVEL",
-                                          DEFAULT_LOG_LEVEL),
-                        help=f'Log Level (default:{DEFAULT_LOG_LEVEL})')
+    parser.add_argument(
+        "--connection-string",
+        type=str,
+        dest="mongo_connection_string",
+        required=os.getenv("MONGO_CONNECTION_STRING") is None,
+        default=os.getenv("MONGO_CONNECTION_STRING"),
+        help=f"MongoDB Connection String (Default: ** Required **)",
+    )
+
+    parser.add_argument(
+        "--db",
+        type=str,
+        dest="logger_database",
+        required=os.getenv("MONGO_LOGGER_DATABASE") is None,
+        default=os.getenv("MONGO_LOGGER_DATABASE"),
+        help=f"MongoDB Logs Database (Default: ** Required **)",
+    )
+
+    parser.add_argument(
+        "--collection",
+        type=str,
+        dest="logger_collection",
+        required=os.getenv("MONGO_LOGGER_COLLECTION") is None,
+        default=os.getenv("MONGO_LOGGER_COLLECTION"),
+        help=f"MongoDB Logs Collection (Default: ** Required **)",
+    )
+
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        dest="log_level",
+        required=False,
+        default=DEFAULT_LOG_LEVEL,
+        help=f"Log Level (default:{DEFAULT_LOG_LEVEL})",
+    )
+
+    parser.add_argument(
+        "--log-path",
+        type=str,
+        dest="log_path",
+        required=False,
+        default=DEFAULT_LOG_PATH,
+        help=f"Log Path (default:{DEFAULT_LOG_PATH})",
+    )
+
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        dest="log_file",
+        required=False,
+        default=DEFAULT_LOG_FILE,
+        help=f"Log File (default:{DEFAULT_LOG_FILE})",
+    )
+
+    parser.add_argument(
+        "--log-rotate",
+        type=str,
+        dest="log_rotate",
+        required=False,
+        default=DEFAULT_LOG_ROTATE,
+        help=f"Log Rotate (default:{DEFAULT_LOG_ROTATE})",
+    )
+
+    parser.add_argument(
+        "--file-logging",
+        dest="file_logging",
+        required=False,
+        default=DEFAULT_FILE_LOGGING,
+        action=argparse.BooleanOptionalAction,
+        help=f"Enable File Logging (default:{DEFAULT_FILE_LOGGING})",
+    )
+
+    parser.add_argument(
+        "--console-logging",
+        dest="console_logging",
+        required=False,
+        default=DEFAULT_CONSOLE_LOGGING,
+        action=argparse.BooleanOptionalAction,
+        help=f"Enable Console Logging (default:{DEFAULT_CONSOLE_LOGGING})",
+    )
 
     args = parser.parse_args()
 
