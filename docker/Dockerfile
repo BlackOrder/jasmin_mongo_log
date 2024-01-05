@@ -22,4 +22,7 @@ COPY . .
 
 RUN pip install .
 
+# Clean up
+RUN rm -rf /build
+
 CMD ["jasminmongologd"]
