@@ -47,7 +47,7 @@ DEFAULT_LOG_FILE: str = os.getenv(
 DEFAULT_LOG_ROTATE: str = os.getenv("JASMIN_MONGO_LOGGER_LOG_ROTATE", "midnight")
 DEFAULT_LOG_FORMAT: str = os.getenv(
     "JASMIN_MONGO_LOGGER_LOG_FORMAT",
-    "%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s",
+    "%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  ** %(message)-55s **",
 )
 DEFAULT_LOG_DATE_FORMAT: str = os.getenv(
     "JASMIN_MONGO_LOGGER_LOG_DATE_FORMAT", "%Y-%m-%d %H:%M:%S"
@@ -144,7 +144,7 @@ class LogReactor:
             logging.disable(logging.CRITICAL)
 
     def startReactor(self):
-        logging.info(" ")
+        logging.info("*********************************************")
         logging.info("*********************************************")
         logging.info(f"::Jasmin MongoDB Logger v{package_version}::")
         logging.info(" ")
@@ -158,7 +158,6 @@ class LogReactor:
         logging.info(f"Retry on connection error: {'Yes' if self.RETRY_ON_CONNECTION_ERROR else 'No'}")
         logging.info(f"Retry count: {'Forever' if self.RETRY_COUNT <= 0 else (self.RETRY_COUNT - 1)}")
         logging.info(f"Retry timeout: {self.RETRY_TIMEOUT}s")
-        logging.info(f"MongoDB Connection String: {self.MONGO_CONNECTION_STRING}")
         logging.info(f"MongoDB Logs Database: {self.MONGO_LOGGER_DATABASE}")
         logging.info(f"MongoDB Logs Collection: {self.MONGO_LOGGER_COLLECTION}")
         logging.info(f"Log Level: {self.LOG_LEVEL}")
@@ -178,16 +177,15 @@ class LogReactor:
 
     @inlineCallbacks
     def gotConnection(self, conn, username, password):
-        logging.info(" ")
+        logging.info("---------------------------------------------")
         logging.info(f"Connected to broker, authenticating: {username}")
 
         yield conn.start({"LOGIN": username, "PASSWORD": password})
 
-        logging.info("Authenticated. Ready to receive messages")
-        logging.info(" ")
-
+        logging.info("Authenticated!")
+        logging.debug("Set up channel")
         chan = yield conn.channel(1)
-        logging.debug("Channel opened")
+        
 
         # Needed to clean up the connection
         logging.debug("Cleaning up ...")
@@ -196,25 +194,35 @@ class LogReactor:
 
         logging.debug("Opening channel")
         yield chan.channel_open()
+        logging.debug("Channel opened")
 
         logging.debug("Declaring queue")
         yield chan.queue_declare(queue="sms_logger_queue")
+        logging.debug("Queue declared")
 
-        # Bind to submit.sm.* and submit.sm.resp.* routes to track sent messages
-        logging.debug("Binding to submit.sm.* and submit.sm.resp.* routes")
+        # Bind to submit.sm.* routes
+        logging.debug("Binding to submit.sm.* routes")
         yield chan.queue_bind(
             queue="sms_logger_queue", exchange="messaging", routing_key="submit.sm.*"
         )
+        logging.debug("Bound to submit.sm.resp.*")
+
+        # Bind to submit.sm.resp.* routes
+        logging.debug("Binding to submit.sm.resp.* route")
         yield chan.queue_bind(
             queue="sms_logger_queue",
             exchange="messaging",
             routing_key="submit.sm.resp.*",
         )
+        logging.debug("Bound to submit.sm.resp.*")
+
+
         logging.debug("Binding to dlr_thrower.* route")
         # Bind to dlr_thrower.* to track DLRs
         yield chan.queue_bind(
             queue="sms_logger_queue", exchange="messaging", routing_key="dlr_thrower.*"
         )
+        logging.debug("Queue bound")
 
         logging.debug("Starting consumer")
         yield chan.basic_consume(
@@ -343,7 +351,7 @@ class LogReactor:
                     # Check if qmsg is None
                     if qmsg is None:
                         logging.error(
-                            f"Got submit_sm_resp of an unknown submit_sm: {props['message-id']}"
+                            f"resp to an unknown: {props['message-id']}"
                         )
                         chan.basic_ack(delivery_tag=msg.delivery_tag)
                         continue
@@ -409,7 +417,7 @@ class LogReactor:
                     # Check if qmsg is None
                     if qmsg is None:
                         logging.error(
-                            f"Got dlr of an unknown submit_sm: {props['message-id']}"
+                            f"dlr to an unknown: {props['message-id']}"
                         )
                         chan.basic_ack(delivery_tag=msg.delivery_tag)
                         continue
@@ -431,22 +439,22 @@ class LogReactor:
                     )
 
                 else:
-                    logging.error(f" unknown route: {msg.routing_key}")
+                    logging.error(f"unknown route: {msg.routing_key}")
 
                 chan.basic_ack(delivery_tag=msg.delivery_tag)
                 logging.debug("Message processed")
                 logging.debug(" ")
 
         except KeyboardInterrupt:
-            logging.critical("KeyboardInterrupt")
+            logging.critical("User Terminated")
             # mark as do not reconnect
             self.RETRY_ON_CONNECTION_ERROR = False
         except Exception as err:
-            logging.critical("Error")
-            logging.debug('Error: ')
+            logging.critical("Unknown Error")
+            logging.debug('Exception:')
             logging.debug(err)
         except:
-            logging.critical("Unknown error")
+            logging.critical("Unknown Error")
         
         # check if we should reconnect
         if not self.RETRY_ON_CONNECTION_ERROR or self.RETRY_COUNT == 1:
@@ -466,7 +474,7 @@ class LogReactor:
         try:
             yield reactor.callLater(self.RETRY_TIMEOUT, self.rabbitMQConnect)
         except KeyboardInterrupt:
-            logging.critical("KeyboardInterrupt")
+            logging.critical("User Terminated")
             self.StopReactor()
     
     def _connect_to_mongo(self, connection_string:str, database_name: str) -> MongoDB|None:
@@ -485,8 +493,8 @@ class LogReactor:
 
     @inlineCallbacks
     def ConError(self, err):
-        logging.critical("Error connecting to RabbitMQ server")
-        logging.debug("Error: ")
+        logging.critical("RabbitMQ connection error")
+        logging.debug("Exception:")
         logging.debug(err)
         self.cleanConnectionBreak()
 
@@ -503,7 +511,7 @@ class LogReactor:
         try:
             yield reactor.callLater(self.RETRY_TIMEOUT, self.rabbitMQConnect)
         except KeyboardInterrupt:
-            logging.critical("KeyboardInterrupt")
+            logging.critical("User Terminated")
             self.StopReactor()
 
     def cleanConnectionBreak(self):
@@ -536,7 +544,7 @@ class LogReactor:
 
     def rabbitMQConnect(self):
         # Connect to RabbitMQ
-        logging.debug(" ")
+        logging.debug("---------------------------------------------")
         logging.debug("Creating a new RabbitMQ connection")
         host = self.AMQP_BROKER_HOST
         port = self.AMQP_BROKER_PORT
