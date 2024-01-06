@@ -83,12 +83,13 @@ class LogReactor:
         console_logging: bool = DEFAULT_CONSOLE_LOGGING,
     ):
         self.RETRY_ON_CONNECTION_ERROR = retry_on_connection_error
-        self.RETRY_COUNT = retry_count
+        self.AMQP_BROKER_RETRY_COUNT, self.MONGO_RETRY_COUNT = retry_count, retry_count
         self.RETRY_TIMEOUT = retry_timeout
 
         # 0 or any negative integer means retry forever. Add 1 to retry count in case of positive integer to account for the first try
-        if self.RETRY_COUNT > 0:
-            self.RETRY_COUNT += 1
+        if self.AMQP_BROKER_RETRY_COUNT > 0:
+            self.AMQP_BROKER_RETRY_COUNT += 1
+            self.MONGO_RETRY_COUNT += 1
 
         self.AMQP_BROKER_HOST = amqp_broker_host
         self.AMQP_BROKER_PORT = amqp_broker_port
@@ -156,7 +157,7 @@ class LogReactor:
         logging.info(f"AMQP Broker Password: {self.AMQP_BROKER_PASSWORD}")
         logging.info(f"AMQP Broker Heartbeat: {self.AMQP_BROKER_HEARTBEAT}")
         logging.info(f"Retry on connection error: {'Yes' if self.RETRY_ON_CONNECTION_ERROR else 'No'}")
-        logging.info(f"Retry count: {'Forever' if self.RETRY_COUNT <= 0 else (self.RETRY_COUNT - 1)}")
+        logging.info(f"Retry count: {'Forever' if self.AMQP_BROKER_RETRY_COUNT <= 0 else (self.AMQP_BROKER_RETRY_COUNT - 1)}")
         logging.info(f"Retry timeout: {self.RETRY_TIMEOUT}s")
         logging.info(f"MongoDB Logs Database: {self.MONGO_LOGGER_DATABASE}")
         logging.info(f"MongoDB Logs Collection: {self.MONGO_LOGGER_COLLECTION}")
@@ -240,13 +241,14 @@ class LogReactor:
         )
 
         # Retry connection if failed
-        while mongosource is None and self.RETRY_ON_CONNECTION_ERROR and self.RETRY_COUNT != 1:
+        while mongosource is None and self.RETRY_ON_CONNECTION_ERROR and self.MONGO_RETRY_COUNT != 1:
             logging.info(f"Reconnecting in {self.RETRY_TIMEOUT} seconds ...")
             sleep(self.RETRY_TIMEOUT)
             mongosource = self._connect_to_mongo(
                 connection_string=self.MONGO_CONNECTION_STRING,
                 database_name=self.MONGO_LOGGER_DATABASE,
             )
+            self.MONGO_RETRY_COUNT -= 1
         
         # Check if mongosource is None, if so, stop reactor
         if mongosource is None:
@@ -457,12 +459,12 @@ class LogReactor:
             logging.critical("Unknown Error")
         
         # check if we should reconnect
-        if not self.RETRY_ON_CONNECTION_ERROR or self.RETRY_COUNT == 1:
+        if not self.RETRY_ON_CONNECTION_ERROR or self.AMQP_BROKER_RETRY_COUNT == 1:
             self.StopReactor()
             return
         
         # decrement retry count
-        self.RETRY_COUNT -= 1
+        self.AMQP_BROKER_RETRY_COUNT -= 1
 
         # clean up
         logging.debug("Cleaning up")
@@ -499,12 +501,12 @@ class LogReactor:
         self.cleanConnectionBreak()
 
         # check if we should reconnect
-        if not self.RETRY_ON_CONNECTION_ERROR or self.RETRY_COUNT == 1:
+        if not self.RETRY_ON_CONNECTION_ERROR or self.AMQP_BROKER_RETRY_COUNT == 1:
             self.StopReactor()
             return
         
         # decrement retry count
-        self.RETRY_COUNT -= 1
+        self.AMQP_BROKER_RETRY_COUNT -= 1
 
         # Wait for RETRY_TIMEOUT seconds before trying to reconnect, but listen for Ctrl+C
         logging.info(f"Reconnecting in {self.RETRY_TIMEOUT} seconds ...")
