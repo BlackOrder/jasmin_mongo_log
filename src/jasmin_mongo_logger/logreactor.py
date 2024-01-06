@@ -23,14 +23,16 @@ package_name = __name__.split(".")[0]
 package_version = pkg_resources.get_distribution(package_name).version
 
 NODEFAULT: str = "REQUIRED: NO_DEFAULT"
-DEFAULT_RETRY_ON_CONNECTION_ERROR: bool = os.getenv("RETRY_ON_CONNECTION_ERROR", "True").lower() in (
+DEFAULT_RETRY_ON_CONNECTION_ERROR: bool = os.getenv(
+    "RETRY_ON_CONNECTION_ERROR", "True"
+).lower() in (
     "yes",
     "true",
     "t",
     "1",
 )
-DEFAULT_RETRY_COUNT: int = int(os.getenv("RETRY_COUNT", "0"))
-DEFAULT_RETRY_TIMEOUT: int = int(os.getenv("RETRY_TIMEOUT", "5"))
+DEFAULT_MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "0"))
+DEFAULT_RETRY_DELAY: int = int(os.getenv("RETRY_DELAY", "5"))
 
 DEFAULT_AMQP_BROKER_HOST: str = os.getenv("AMQP_BROKER_HOST", "127.0.0.1")
 DEFAULT_AMQP_BROKER_PORT: int = int(os.getenv("AMQP_BROKER_PORT", "5672"))
@@ -73,8 +75,8 @@ class LogReactor:
         amqp_broker_password: str = DEFAULT_AMQP_BROKER_PASSWORD,
         amqp_broker_heartbeat: int = DEFAULT_AMQP_BROKER_HEARTBEAT,
         retry_on_connection_error: bool = DEFAULT_RETRY_ON_CONNECTION_ERROR,
-        retry_count: int = DEFAULT_RETRY_COUNT,
-        retry_timeout: int = DEFAULT_RETRY_TIMEOUT,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_delay: int = DEFAULT_RETRY_DELAY,
         log_level: str = DEFAULT_LOG_LEVEL,
         log_path: str = DEFAULT_LOG_PATH,
         log_file: str = DEFAULT_LOG_FILE,
@@ -83,13 +85,9 @@ class LogReactor:
         console_logging: bool = DEFAULT_CONSOLE_LOGGING,
     ):
         self.RETRY_ON_CONNECTION_ERROR = retry_on_connection_error
-        self.AMQP_BROKER_RETRY_COUNT, self.MONGO_RETRY_COUNT = retry_count, retry_count
-        self.RETRY_TIMEOUT = retry_timeout
-
-        # 0 or any negative integer means retry forever. Add 1 to retry count in case of positive integer to account for the first try
-        if self.AMQP_BROKER_RETRY_COUNT > 0:
-            self.AMQP_BROKER_RETRY_COUNT += 1
-            self.MONGO_RETRY_COUNT += 1
+        self.amqp_broker_max_retries, self.mongo_max_retries = max_retries, max_retries
+        self.RETRY_DELAY = retry_delay
+        self.RETRY_FOREVER = max_retries <= 0    
 
         self.AMQP_BROKER_HOST = amqp_broker_host
         self.AMQP_BROKER_PORT = amqp_broker_port
@@ -110,14 +108,18 @@ class LogReactor:
         self.CONSOLE_LOGGING = console_logging
 
         # Set up logging
-        self.LOG_FORMAT = os.getenv("JASMIN_MONGO_LOGGER_LOG_FORMAT", DEFAULT_LOG_FORMAT)
+        self.LOG_FORMAT = os.getenv(
+            "JASMIN_MONGO_LOGGER_LOG_FORMAT", DEFAULT_LOG_FORMAT
+        )
         self.LOG_DATE_FORMAT = os.getenv(
             "JASMIN_MONGO_LOGGER_LOG_DATE_FORMAT", DEFAULT_LOG_DATE_FORMAT
         )
 
         # Enable logging if console logging or file logging is enabled
         if self.FILE_LOGGING or self.CONSOLE_LOGGING:
-            logFormatter = logging.Formatter(self.LOG_FORMAT, datefmt=self.LOG_DATE_FORMAT)
+            logFormatter = logging.Formatter(
+                self.LOG_FORMAT, datefmt=self.LOG_DATE_FORMAT
+            )
             rootLogger = logging.getLogger()
             rootLogger.setLevel(self.LOG_LEVEL)
 
@@ -134,7 +136,8 @@ class LogReactor:
                     os.makedirs(self.LOG_PATH)
 
                 fileHandler = logging.handlers.TimedRotatingFileHandler(
-                    filename="%s/%s" % (self.LOG_PATH.rstrip("/"), self.LOG_FILE.lstrip("/")),
+                    filename="%s/%s"
+                    % (self.LOG_PATH.rstrip("/"), self.LOG_FILE.lstrip("/")),
                     when=self.LOG_ROTATE,
                 )
                 fileHandler.setFormatter(logFormatter)
@@ -156,9 +159,13 @@ class LogReactor:
         logging.info(f"AMQP Broker Username: {self.AMQP_BROKER_USERNAME}")
         logging.info(f"AMQP Broker Password: {self.AMQP_BROKER_PASSWORD}")
         logging.info(f"AMQP Broker Heartbeat: {self.AMQP_BROKER_HEARTBEAT}")
-        logging.info(f"Retry on connection error: {'Yes' if self.RETRY_ON_CONNECTION_ERROR else 'No'}")
-        logging.info(f"Retry count: {'Forever' if self.AMQP_BROKER_RETRY_COUNT <= 0 else (self.AMQP_BROKER_RETRY_COUNT - 1)}")
-        logging.info(f"Retry timeout: {self.RETRY_TIMEOUT}s")
+        logging.info(
+            f"Retry on connection error: {'Yes' if self.RETRY_ON_CONNECTION_ERROR else 'No'}"
+        )
+        logging.info(
+            f"Retry count: {'Forever' if self.RETRY_FOREVER else self.amqp_broker_max_retries}"
+        )
+        logging.info(f"Retry timeout: {self.RETRY_DELAY}s")
         logging.info(f"MongoDB Logs Database: {self.MONGO_LOGGER_DATABASE}")
         logging.info(f"MongoDB Logs Collection: {self.MONGO_LOGGER_COLLECTION}")
         logging.info(f"Log Level: {self.LOG_LEVEL}")
@@ -166,12 +173,14 @@ class LogReactor:
         logging.info(f"Log File: {self.LOG_FILE}")
         logging.info(f"Log Rotate: {self.LOG_ROTATE}")
         logging.info(f"File Logging: {'Enabled' if self.FILE_LOGGING else 'Disabled'}")
-        logging.info(f"Console Logging: {'Enabled' if self.CONSOLE_LOGGING else 'Disabled'}")
+        logging.info(
+            f"Console Logging: {'Enabled' if self.CONSOLE_LOGGING else 'Disabled'}"
+        )
         logging.info("*********************************************")
 
         # Connect to RabbitMQ
         self.rabbitMQConnect()
-        
+
         # Run the reactor
         logging.debug("Running reactor")
         reactor.run()
@@ -186,7 +195,6 @@ class LogReactor:
         logging.info("Authenticated!")
         logging.debug("Set up channel")
         chan = yield conn.channel(1)
-        
 
         # Needed to clean up the connection
         logging.debug("Cleaning up ...")
@@ -217,7 +225,6 @@ class LogReactor:
         )
         logging.debug("Bound to submit.sm.resp.*")
 
-
         logging.debug("Binding to dlr_thrower.* route")
         # Bind to dlr_thrower.* to track DLRs
         yield chan.queue_bind(
@@ -241,15 +248,19 @@ class LogReactor:
         )
 
         # Retry connection if failed
-        while mongosource is None and self.RETRY_ON_CONNECTION_ERROR and self.MONGO_RETRY_COUNT != 1:
-            logging.info(f"Reconnecting in {self.RETRY_TIMEOUT} seconds ...")
-            sleep(self.RETRY_TIMEOUT)
+        while (
+            mongosource is None
+            and self.RETRY_ON_CONNECTION_ERROR
+            and (self.mongo_max_retries > 0 or self.RETRY_FOREVER)
+        ):
+            logging.info(f"Reconnecting in {self.RETRY_DELAY} seconds ...")
+            sleep(self.RETRY_DELAY)
             mongosource = self._connect_to_mongo(
                 connection_string=self.MONGO_CONNECTION_STRING,
                 database_name=self.MONGO_LOGGER_DATABASE,
             )
-            self.MONGO_RETRY_COUNT -= 1
-        
+            self.mongo_max_retries -= 1
+
         # Check if mongosource is None, if so, stop reactor
         if mongosource is None:
             logging.critical("MongoDB connection failed: no more retries")
@@ -453,33 +464,35 @@ class LogReactor:
             self.RETRY_ON_CONNECTION_ERROR = False
         except Exception as err:
             logging.critical("Unknown Error")
-            logging.debug('Exception:')
+            logging.debug("Exception:")
             logging.debug(err)
         except:
             logging.critical("Unknown Error")
-        
+
         # check if we should reconnect
-        if not self.RETRY_ON_CONNECTION_ERROR or self.AMQP_BROKER_RETRY_COUNT == 1:
+        if not self.RETRY_ON_CONNECTION_ERROR or (self.amqp_broker_max_retries <= 0 and not self.RETRY_FOREVER):
             self.StopReactor()
             return
-        
+
         # decrement retry count
-        self.AMQP_BROKER_RETRY_COUNT -= 1
+        self.amqp_broker_max_retries -= 1
 
         # clean up
         logging.debug("Cleaning up")
         self.cleanConnectionBreak()
         logging.debug("Cleaning up done")
 
-        # Restart the connection in RETRY_TIMEOUT seconds
-        logging.info(f"Reconnecting in {self.RETRY_TIMEOUT} seconds ...")
+        # Restart the connection in RETRY_DELAY seconds
+        logging.info(f"Reconnecting in {self.RETRY_DELAY} seconds ...")
         try:
-            yield reactor.callLater(self.RETRY_TIMEOUT, self.rabbitMQConnect)
+            yield reactor.callLater(self.RETRY_DELAY, self.rabbitMQConnect)
         except KeyboardInterrupt:
             logging.critical("User Terminated")
             self.StopReactor()
-    
-    def _connect_to_mongo(self, connection_string:str, database_name: str) -> MongoDB|None:
+
+    def _connect_to_mongo(
+        self, connection_string: str, database_name: str
+    ) -> MongoDB | None:
         mongosource = MongoDB(
             connection_string=connection_string,
             database_name=database_name,
@@ -501,17 +514,17 @@ class LogReactor:
         self.cleanConnectionBreak()
 
         # check if we should reconnect
-        if not self.RETRY_ON_CONNECTION_ERROR or self.AMQP_BROKER_RETRY_COUNT == 1:
+        if not self.RETRY_ON_CONNECTION_ERROR or (self.amqp_broker_max_retries <= 0 and not self.RETRY_FOREVER):
             self.StopReactor()
             return
-        
-        # decrement retry count
-        self.AMQP_BROKER_RETRY_COUNT -= 1
 
-        # Wait for RETRY_TIMEOUT seconds before trying to reconnect, but listen for Ctrl+C
-        logging.info(f"Reconnecting in {self.RETRY_TIMEOUT} seconds ...")
+        # decrement retry count
+        self.amqp_broker_max_retries -= 1
+
+        # Wait for RETRY_DELAY seconds before trying to reconnect, but listen for Ctrl+C
+        logging.info(f"Reconnecting in {self.RETRY_DELAY} seconds ...")
         try:
-            yield reactor.callLater(self.RETRY_TIMEOUT, self.rabbitMQConnect)
+            yield reactor.callLater(self.RETRY_DELAY, self.rabbitMQConnect)
         except KeyboardInterrupt:
             logging.critical("User Terminated")
             self.StopReactor()
@@ -597,7 +610,6 @@ class LogReactor:
         conn.addErrback(self.ConError)
 
 
-
 def console_entry_point():
     parser = argparse.ArgumentParser(
         description=f"Jasmin MongoDB Logger, Log Jasmin SMS Gateway MT/MO to MongoDB Cluster (can be one node).",
@@ -673,23 +685,23 @@ def console_entry_point():
         action=argparse.BooleanOptionalAction,
         help=f"Retry on connection error (default:{DEFAULT_RETRY_ON_CONNECTION_ERROR})",
     )
-    
+
     parser.add_argument(
-        "--retry-count",
+        "--max-retries",
         type=int,
-        dest="retry_count",
+        dest="max_retries",
         required=False,
-        default=DEFAULT_RETRY_COUNT,
-        help=f"Retry count (default:{DEFAULT_RETRY_COUNT}) - 0 or any negative integer means retry forever",
+        default=DEFAULT_MAX_RETRIES,
+        help=f"Max retries (default:{DEFAULT_MAX_RETRIES}) - 0 or any negative integer means retry forever",
     )
 
     parser.add_argument(
-        "--retry-timeout",
+        "--retry-delay",
         type=int,
-        dest="retry_timeout",
+        dest="retry_delay",
         required=False,
-        default=DEFAULT_RETRY_TIMEOUT,
-        help=f"Retry timeout in seconds (default:{DEFAULT_RETRY_TIMEOUT}s)",
+        default=DEFAULT_RETRY_DELAY,
+        help=f"Retry delay seconds (default:{DEFAULT_RETRY_DELAY}s)",
     )
 
     parser.add_argument(
