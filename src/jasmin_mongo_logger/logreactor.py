@@ -108,8 +108,6 @@ class LogReactor:
         self.FILE_LOGGING = file_logging
         self.CONSOLE_LOGGING = console_logging
 
-        self.queue = {}
-
         # Set up logging
         self.LOG_FORMAT = os.getenv("JASMIN_MONGO_LOGGER_LOG_FORMAT", DEFAULT_LOG_FORMAT)
         self.LOG_DATE_FORMAT = os.getenv(
@@ -223,6 +221,7 @@ class LogReactor:
             queue="sms_logger_queue", no_ack=False, consumer_tag="sms_logger"
         )
         logging.debug("Consumer started")
+
         queue = yield conn.queue("sms_logger")
 
         logging.debug("Connecting to MongoDB")
@@ -299,21 +298,6 @@ class LogReactor:
                                 "utf_16_be", "ignore"
                             ).encode("utf_8")
 
-                    # Save message in queue
-                    logging.debug("Saving message in queue")
-                    self.queue[props["message-id"]] = {
-                        "source_connector": source_connector,
-                        "routed_cid": routed_cid,
-                        "rate": submit_sm_bill.getTotalAmounts(),
-                        "charge": submit_sm_bill.getTotalAmounts() * pdu_count,
-                        "uid": submit_sm_bill.user.uid,
-                        "destination_addr": pdu.params["destination_addr"],
-                        "source_addr": pdu.params["source_addr"],
-                        "pdu_count": pdu_count,
-                        "short_message": short_message,
-                        "binary_message": binary_message,
-                    }
-
                     # Save message in MongoDB
                     logging.debug("Saving message in MongoDB")
                     mongosource.update_one(
@@ -337,14 +321,21 @@ class LogReactor:
                     logging.debug("It's a submit_sm_resp")
 
                     pdu = pickle.loads(msg.content.body)
-                    if props["message-id"] not in self.queue:
+
+                    # get qmsg from MongoDB
+                    logging.debug("Getting message info from MongoDB")
+                    qmsg = mongosource.get_one_submodule(
+                        module=self.MONGO_LOGGER_COLLECTION,
+                        sub_id=props["message-id"],
+                    )
+
+                    # Check if qmsg is None
+                    if qmsg is None:
                         logging.error(
-                            f" Got resp of an unknown submit_sm: {props['message-id']}"
+                            f"Got submit_sm_resp of an unknown submit_sm: {props['message-id']}"
                         )
                         chan.basic_ack(delivery_tag=msg.delivery_tag)
                         continue
-
-                    qmsg = self.queue[props["message-id"]]
 
                     if qmsg["source_addr"] is None:
                         qmsg["source_addr"] = ""
@@ -357,6 +348,13 @@ class LogReactor:
 
                     # Update message status
                     logging.debug("Updating message status in MongoDB")
+                    logging.debug("current msg object: ")
+                    logging.debug(qmsg)
+                    logging.debug("received submit_sm_resp: ")
+                    logging.debug(pdu.status)
+
+                    # Update message status
+                    logging.debug("Updating message info in MongoDB")
                     mongosource.update_one(
                         module=self.MONGO_LOGGER_COLLECTION,
                         sub_id=props["message-id"],
@@ -389,16 +387,28 @@ class LogReactor:
 
                     # It's a dlr
                     logging.debug("It's a dlr")
-                    if props["message-id"] not in self.queue:
+                    
+                    # get qmsg from MongoDB
+                    logging.debug("Getting message info from MongoDB")
+                    qmsg = mongosource.get_one_submodule(
+                        module=self.MONGO_LOGGER_COLLECTION,
+                        sub_id=props["message-id"],
+                    )
+                    
+                    # Check if qmsg is None
+                    if qmsg is None:
                         logging.error(
-                            f" Got dlr of an unknown submit_sm: {props['message-id']}"
+                            f"Got dlr of an unknown submit_sm: {props['message-id']}"
                         )
                         chan.basic_ack(delivery_tag=msg.delivery_tag)
                         continue
 
                     # Update message status
                     logging.debug("Updating message status in MongoDB")
-                    qmsg = self.queue[props["message-id"]]
+                    logging.debug("current msg object: ")
+                    logging.debug(qmsg)
+                    logging.debug("received dlr: ")
+                    logging.debug(props["headers"]["message_status"])
 
                     mongosource.update_one(
                         module=self.MONGO_LOGGER_COLLECTION,
