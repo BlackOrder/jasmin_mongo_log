@@ -16,6 +16,7 @@ class MongoDB:
         logging.info(msg=msg)
 
     def startConnection(self) -> bool:
+        """ Start connection to MongoDB """
         mongoclient = MongoClient(self.connection_string)
         server_info = mongoclient.server_info()
         if isinstance(server_info, dict) and 'ok' in server_info and server_info['ok'] == 1:
@@ -37,7 +38,7 @@ class MongoDB:
             return False
 
     def get_one_module(self, module: str) -> dict[str, str | float | bool]:
-        "" ""
+        """ Get all data from a module """
         data: dict[str, str | float | bool] = {}
         cursor = self.database[module].find()
         for row in cursor:
@@ -48,17 +49,20 @@ class MongoDB:
         return data
 
     def get_one_submodule(self, module: str, sub_id: str) -> dict[str, str | float | bool]:
-        "" ""
+        """ Get all data from a submodule """
         return self.database[module].find_one({"_id": sub_id})
 
     def insert_one(self, module, sub_id, data):
+        """ Insert one data to a module """
         data["_id"] = sub_id
         self.database[module].insert_one(data)
 
     def increment_one(self, module, sub_id, data):
+        """ Increment one data to a module """
         self.database[module].update_one(
             {"_id": sub_id}, {'$inc': data})
 
     def update_one(self, module, sub_id, data, upsert=True):
+        """ Update one data to a module """
         self.database[module].update_one(
             {"_id": sub_id}, {'$set': data}, upsert=upsert)
