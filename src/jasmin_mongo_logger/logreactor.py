@@ -224,18 +224,29 @@ class LogReactor:
 
         queue = yield conn.queue("sms_logger")
 
+        # Connect to MongoDB
         logging.debug("Connecting to MongoDB")
-        mongosource = MongoDB(
+        mongosource = self._connect_to_mongo(
             connection_string=self.MONGO_CONNECTION_STRING,
             database_name=self.MONGO_LOGGER_DATABASE,
         )
 
-        logging.debug("Checking MongoDB connection")
-        if mongosource.startConnection() is not True:
-            logging.debug("MongoDB connection failed")
+        # Retry connection if failed
+        while mongosource is None and self.RETRY_ON_CONNECTION_ERROR and self.RETRY_COUNT != 1:
+            logging.info(f"Reconnecting in {self.RETRY_TIMEOUT} seconds ...")
+            sleep(self.RETRY_TIMEOUT)
+            mongosource = self._connect_to_mongo(
+                connection_string=self.MONGO_CONNECTION_STRING,
+                database_name=self.MONGO_LOGGER_DATABASE,
+            )
+        
+        # Check if mongosource is None, if so, stop reactor
+        if mongosource is None:
+            logging.critical("MongoDB connection failed: no more retries")
+            self.StopReactor()
             return
 
-        logging.debug("MongoDB connection successful")
+        logging.debug("MongoDB connection passed")
         # Wait for messages
         # This can be done through a callback ...
         logging.debug("Starting message processing")
@@ -457,7 +468,20 @@ class LogReactor:
         except KeyboardInterrupt:
             logging.critical("KeyboardInterrupt")
             self.StopReactor()
+    
+    def _connect_to_mongo(self, connection_string:str, database_name: str) -> MongoDB|None:
+        mongosource = MongoDB(
+            connection_string=connection_string,
+            database_name=database_name,
+        )
 
+        logging.debug("Checking MongoDB connection")
+        if mongosource.startConnection() is not True:
+            logging.info("MongoDB connection failed")
+            return None
+        else:
+            logging.info("MongoDB connection successful")
+            return mongosource
 
     @inlineCallbacks
     def ConError(self, err):
