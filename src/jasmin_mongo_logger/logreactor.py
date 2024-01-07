@@ -44,6 +44,15 @@ DEFAULT_AMQP_BROKER_USERNAME: str = os.getenv("AMQP_BROKER_USERNAME", "guest")
 DEFAULT_AMQP_BROKER_PASSWORD: str = os.getenv("AMQP_BROKER_PASSWORD", "guest")
 DEFAULT_AMQP_BROKER_HEARTBEAT: int = int(os.getenv("AMQP_BROKER_HEARTBEAT", "0"))
 
+DEFUALT_LOGGER_PRIVACY: bool = os.getenv(
+    "JASMIN_MONGO_LOGGER_PRIVACY", "False"
+).lower() in (
+    "yes",
+    "true",
+    "t",
+    "1",
+)
+
 DEFAULT_LOG_LEVEL: str = os.getenv("JASMIN_MONGO_LOGGER_LOG_LEVEL", "INFO").upper()
 DEFAULT_LOG_PATH: str = os.getenv("JASMIN_MONGO_LOGGER_LOG_PATH", "/var/log/jasmin")
 DEFAULT_LOG_FILE: str = os.getenv(
@@ -71,6 +80,7 @@ class LogReactor:
         mongo_connection_string: str,
         logger_database: str,
         logger_collection: str,
+        logger_privacy: bool = DEFUALT_LOGGER_PRIVACY,
         amqp_broker_host: str = DEFAULT_AMQP_BROKER_HOST,
         amqp_broker_port: int = DEFAULT_AMQP_BROKER_PORT,
         amqp_broker_vhost: str = DEFAULT_AMQP_BROKER_VHOST,
@@ -102,6 +112,8 @@ class LogReactor:
         self.MONGO_CONNECTION_STRING = mongo_connection_string
         self.MONGO_LOGGER_DATABASE = logger_database
         self.MONGO_LOGGER_COLLECTION = logger_collection
+
+        self.LOGGER_PRIVACY = logger_privacy
 
         self.LOG_LEVEL = log_level
         self.LOG_PATH = log_path
@@ -731,6 +743,15 @@ def console_entry_point():
         required=os.getenv("MONGO_LOGGER_DATABASE") is None,
         default=os.getenv("MONGO_LOGGER_DATABASE"),
         help=f"MongoDB Logs Database (Default: ** Required **)",
+    )
+
+    parser.add_argument(
+        "--privacy",
+        dest="logger_privacy",
+        required=False,
+        default=DEFUALT_LOGGER_PRIVACY,
+        action=argparse.BooleanOptionalAction,
+        help=f"Enable SMS Privacy (default:{DEFUALT_LOGGER_PRIVACY})",
     )
 
     parser.add_argument(
