@@ -1,4 +1,5 @@
 import binascii
+from copy import deepcopy
 import logging
 import logging.handlers
 import os
@@ -9,12 +10,13 @@ from time import sleep
 import argparse
 import pkg_resources
 import txamqp.spec
-from smpp.pdu.pdu_types import DataCoding
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks
 from twisted.internet.protocol import ClientCreator
 from txamqp.client import TwistedDelegate
 from txamqp.protocol import AMQClient
+from smpp.pdu.pdu_types import EsmClassGsmFeatures, DataCodingDefault
+from smpp.pdu.constants import data_coding_default_name_map
 
 from .mongodb import MongoDB
 
@@ -298,11 +300,15 @@ class LogReactor:
                 msg = yield queue.get()
 
                 logging.debug("Got message")
+                # Get message properties
                 props = msg.content.properties
+                headers = props.get("headers")
+                message_id = props.get("message-id")
+
                 logging.debug("Processing message")
-                logging.debug(f"Message ID: {props['message-id']}")
+                logging.debug(f"Message ID: {message_id}")
                 logging.debug(f"Routing key: {msg.routing_key}")
-                logging.debug(f"Headers: {props['headers']}")
+                logging.debug(f"Headers: {headers}")
                 logging.debug(f"Payload: {msg.content.body}")
                 logging.debug(" ")
 
@@ -311,60 +317,199 @@ class LogReactor:
                     and msg.routing_key[:15] != "submit.sm.resp."
                 ):
                     # It's a submit_sm
-                    logging.debug("It's a submit_sm")
-
+                    logging.debug("It's a submit_sm***")
+                    created_at = headers.get("created_at")
+                    priority = props.get("priority")
+                    source = headers.get("source_connector")
+                    route = msg.routing_key[10:]
                     pdu = pickle.loads(msg.content.body)
-                    pdu_count = 1
-                    short_message = pdu.params["short_message"]
-                    billing = props["headers"]
-                    billing_pickle = billing.get("submit_sm_resp_bill")
-                    if not billing_pickle:
-                        billing_pickle = billing.get("submit_sm_bill")
-                    submit_sm_bill = pickle.loads(billing_pickle)
-                    source_connector = props["headers"]["source_connector"]
-                    routed_cid = msg.routing_key[10:]
 
-                    # Is it a multipart message ?
-                    while hasattr(pdu, "nextPdu"):
-                        # Remove UDH from first part
-                        if pdu_count == 1:
-                            short_message = short_message[6:]
+                    logging.debug(f"message-id: {message_id}")
+                    logging.debug(f"created_at: {created_at}")
+                    logging.debug(f"priority: {priority}")
+                    logging.debug(f"source: {source}")
+                    logging.debug(f"route: {route}")
 
-                        pdu = pdu.nextPdu
+                    pdu_data = pdu.params
+                    destination_addr = pdu_data.get("destination_addr").decode("utf-8")
+                    source_addr = pdu_data.get("source_addr").decode("utf-8")
+                    schedule_delivery_time = pdu_data.get("schedule_delivery_time")
+                    validity_period = pdu_data.get("validity_period")
+                    data_coding = pdu_data.get("data_coding")
+                    validity = (
+                        None
+                        if ("headers" not in props or "expiration" not in headers)
+                        else headers.get("expiration")
+                    )
+                    status = pdu.status
 
-                        # Update values:
-                        pdu_count += 1
-                        short_message += pdu.params["short_message"][6:]
+                    sms_pages = 1  # TODO: calculate sms_pages
+                    short_message = None
+
+                    UDHI_INDICATOR_SET = False
+                    if hasattr(pdu_data.get("esm_class"), "gsmFeatures"):
+                        for gsmFeature in pdu_data.get("esm_class").gsmFeatures:
+                            if gsmFeature == EsmClassGsmFeatures.UDHI_INDICATOR_SET:
+                                UDHI_INDICATOR_SET = True
+                                break
+
+                    # What type of splitting ?
+                    splitMethod = None
+                    if "sar_msg_ref_num" in pdu_data:
+                        splitMethod = "sar"
+                    elif (
+                        UDHI_INDICATOR_SET
+                        and pdu_data.get("short_message")[:3] == b"\x05\x00\x03"
+                    ):
+                        splitMethod = "udh"
+
+                    logging.debug(f"splitMethod: {splitMethod}")
+                    logging.debug(f"UDHI_INDICATOR_SET: {UDHI_INDICATOR_SET}")
+
+                    # Concatenate short_message
+                    if splitMethod is not None:
+                        if splitMethod == "sar":
+                            short_message = pdu_data.get("short_message")
+                        else:
+                            short_message = pdu_data.get("short_message")[6:]
+
+                        while hasattr(pdu, "nextPdu"):
+                            pdu = pdu.nextPdu
+                            pdu_data = pdu.params
+                            if splitMethod == "sar":
+                                short_message += pdu_data.get("short_message")
+                            else:
+                                short_message += pdu_data.get("short_message")[6:]
+
+                            sms_pages += 1
+                    else:
+                        short_message = pdu_data.get("short_message")
 
                     # Save short_message bytes
                     binary_message = binascii.hexlify(short_message)
 
-                    # If it's a binary message, assume it's utf_16_be encoded
-                    if pdu.params["data_coding"] is not None:
-                        dc = pdu.params["data_coding"]
-                        if (isinstance(dc, int) and dc == 8) or (
-                            isinstance(dc, DataCoding) and str(dc.schemeData) == "UCS2"
+                    # Decode short_message
+                    short_message_decoded = short_message
+                    if data_coding is not None:
+                        if data_coding in [
+                            data_coding_default_name_map.get(
+                                DataCodingDefault.SMSC_DEFAULT_ALPHABET.name
+                            ),
+                            data_coding_default_name_map.get(
+                                DataCodingDefault.IA5_ASCII.name
+                            ),
+                        ]:
+                            short_message_decoded = short_message.decode(
+                                "ascii", "replace"
+                            )
+                        elif data_coding == data_coding_default_name_map.get(
+                            DataCodingDefault.LATIN_1.name
                         ):
-                            short_message = short_message.decode(
-                                "utf_16_be", "ignore"
-                            ).encode("utf_8")
+                            short_message_decoded = short_message.decode(
+                                "latin_1", "replace"
+                            )
+                        elif data_coding == data_coding_default_name_map.get(
+                            DataCodingDefault.UCS2.name
+                        ):
+                            short_message_decoded = short_message.decode(
+                                "UTF-16BE", "replace"
+                            )
+                        else:
+                            short_message_decoded = short_message.decode(
+                                "UTF-8", "replace"
+                            )
+
+                    private_short_message = '** %s byte content **' % len(short_message)
+                    private_binary_message = '** %s byte content **' % len(binary_message)
+                    private_short_message_decoded = '** %s char content **' % len(short_message_decoded)
+
+                    logging.debug(f"short_message: {short_message}")
+                    logging.debug(f"short_message_binary: {binary_message}")
+                    logging.debug(f"short_message_decoded: {short_message_decoded}")
+
+                    logging.debug(f"short_message: (privacy ON): {private_short_message}")
+                    logging.debug(f"short_message_binary: (privacy ON): {private_binary_message}")
+                    logging.debug(f"short_message_decoded: (privacy ON): {private_short_message_decoded}")
+
+                    logging.debug(f"destination_addr: {destination_addr}")
+                    logging.debug(f"source_addr: {source_addr}")
+                    logging.debug(f"schedule_delivery_time: {schedule_delivery_time}")
+                    logging.debug(f"validity_period: {validity_period}")
+                    logging.debug(f"data_coding: {data_coding}")
+                    logging.debug(f"validity: {validity}")
+                    logging.debug(f"status: {status}")
+                    logging.debug(f"sms_pages: {sms_pages}")
+
+                    billing_pickle = headers.get("submit_sm_resp_bill")
+                    if not billing_pickle:
+                        billing_pickle = headers.get("submit_sm_bill")
+
+                    billing = pickle.loads(billing_pickle)
+
+                    bill: dict = {
+                        "_id": billing.bid,
+                        "user": {
+                            "_id": billing.user.uid,
+                            "group": billing.user.group.gid,
+                            "username": billing.user.username,
+                            "quota": {
+                                "balance": billing.user.mt_credential.quotas.get(
+                                    "balance"
+                                ),
+                                "submit_sm_count": billing.user.mt_credential.quotas.get(
+                                    "submit_sm_count"
+                                ),
+                            },
+                        },
+                        "source_connector": source,
+                        "routed_cid": route,
+                        "created_at": created_at,
+                        "priority": priority,
+                        "destination_addr": destination_addr,
+                        "source_addr": source_addr,
+                        "schedule_delivery_time": schedule_delivery_time,
+                        "validity_period": validity_period,
+                        "page_count": sms_pages,
+                        "amount_rate": billing.getTotalAmounts(),
+                        "amount_charge": billing.getTotalAmounts() * sms_pages,
+                        "sms_count_rate": billing.actions.get(
+                            "decrement_submit_sm_count"
+                        ),
+                        "sms_count_charge": billing.actions.get(
+                            "decrement_submit_sm_count"
+                        )
+                        * sms_pages,
+                    }
+
+                    logging.debug("**** submit_sm_bill:")
+                    logging.debug("bill:")
+                    # log formated bill dict
+                    for key, value in bill.items():
+                        logging.debug(f"\t{key}: {value}")
+
 
                     # Save message in MongoDB
                     logging.debug("Saving message in MongoDB")
                     mongosource.update_one(
                         module=self.MONGO_LOGGER_COLLECTION,
-                        sub_id=props["message-id"],
+                        sub_id=message_id,
                         data={
-                            "source_connector": source_connector,
-                            "routed_cid": routed_cid,
-                            "rate": submit_sm_bill.getTotalAmounts(),
-                            "charge": submit_sm_bill.getTotalAmounts() * pdu_count,
-                            "uid": submit_sm_bill.user.uid,
-                            "destination_addr": pdu.params["destination_addr"],
-                            "source_addr": pdu.params["source_addr"],
-                            "pdu_count": pdu_count,
-                            "short_message": short_message,
-                            "binary_message": binary_message,
+                            "created_at": created_at,
+                            "priority": priority,
+                            "source":source,
+                            "route":route,
+                            "destination_addr": destination_addr,
+                            "source_addr": source_addr,
+                            "schedule_delivery_time": schedule_delivery_time,
+                            "validity_period": validity_period,
+                            "data_coding":data_coding,
+                            "validity":validity,
+                            "status":status,
+                            "page_count": sms_pages,
+                            "short_message": short_message if not self.LOGGER_PRIVACY else private_short_message,
+                            "binary_message": binary_message if not self.LOGGER_PRIVACY else private_binary_message,
+                            "short_message_decoded": short_message_decoded if not self.LOGGER_PRIVACY else private_short_message_decoded,
+                            "bill": bill,
                         },
                     )
                 elif msg.routing_key[:15] == "submit.sm.resp.":
