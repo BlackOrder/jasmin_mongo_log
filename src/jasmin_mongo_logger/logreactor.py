@@ -23,6 +23,9 @@ package_name = __name__.split(".")[0]
 package_version = pkg_resources.get_distribution(package_name).version
 
 NODEFAULT: str = "REQUIRED: NO_DEFAULT"
+DEFAULT_QUEUE_NAME: str = "%s_queue" % package_name
+DEFAULT_EXCHANGE_NAME: str = "messaging"
+DEFAULT_CONSUMER_TAG: str = "%s_consumer" % package_name
 DEFAULT_RETRY_ON_CONNECTION_ERROR: bool = os.getenv(
     "RETRY_ON_CONNECTION_ERROR", "True"
 ).lower() in (
@@ -87,7 +90,7 @@ class LogReactor:
         self.RETRY_ON_CONNECTION_ERROR = retry_on_connection_error
         self.amqp_broker_max_retries, self.mongo_max_retries = max_retries, max_retries
         self.RETRY_DELAY = retry_delay
-        self.RETRY_FOREVER = max_retries <= 0    
+        self.RETRY_FOREVER = max_retries <= 0
 
         self.AMQP_BROKER_HOST = amqp_broker_host
         self.AMQP_BROKER_PORT = amqp_broker_port
@@ -206,21 +209,23 @@ class LogReactor:
         logging.debug("Channel opened")
 
         logging.debug("Declaring queue")
-        yield chan.queue_declare(queue="sms_logger_queue")
+        yield chan.queue_declare(queue=DEFAULT_QUEUE_NAME)
         logging.debug("Queue declared")
 
         # Bind to submit.sm.* routes
         logging.debug("Binding to submit.sm.* routes")
         yield chan.queue_bind(
-            queue="sms_logger_queue", exchange="messaging", routing_key="submit.sm.*"
+            queue=DEFAULT_QUEUE_NAME,
+            exchange=DEFAULT_EXCHANGE_NAME,
+            routing_key="submit.sm.*",
         )
         logging.debug("Bound to submit.sm.resp.*")
 
         # Bind to submit.sm.resp.* routes
         logging.debug("Binding to submit.sm.resp.* route")
         yield chan.queue_bind(
-            queue="sms_logger_queue",
-            exchange="messaging",
+            queue=DEFAULT_QUEUE_NAME,
+            exchange=DEFAULT_EXCHANGE_NAME,
             routing_key="submit.sm.resp.*",
         )
         logging.debug("Bound to submit.sm.resp.*")
@@ -228,17 +233,19 @@ class LogReactor:
         logging.debug("Binding to dlr_thrower.* route")
         # Bind to dlr_thrower.* to track DLRs
         yield chan.queue_bind(
-            queue="sms_logger_queue", exchange="messaging", routing_key="dlr_thrower.*"
+            queue=DEFAULT_QUEUE_NAME,
+            exchange=DEFAULT_EXCHANGE_NAME,
+            routing_key="dlr_thrower.*",
         )
         logging.debug("Queue bound")
 
         logging.debug("Starting consumer")
         yield chan.basic_consume(
-            queue="sms_logger_queue", no_ack=False, consumer_tag="sms_logger"
+            queue=DEFAULT_QUEUE_NAME, no_ack=False, consumer_tag=DEFAULT_CONSUMER_TAG
         )
         logging.debug("Consumer started")
 
-        queue = yield conn.queue("sms_logger")
+        queue = yield conn.queue(DEFAULT_CONSUMER_TAG)
 
         # Connect to MongoDB
         logging.debug("Connecting to MongoDB")
@@ -470,7 +477,9 @@ class LogReactor:
             logging.critical("Unknown Error")
 
         # check if we should reconnect
-        if not self.RETRY_ON_CONNECTION_ERROR or (self.amqp_broker_max_retries <= 0 and not self.RETRY_FOREVER):
+        if not self.RETRY_ON_CONNECTION_ERROR or (
+            self.amqp_broker_max_retries <= 0 and not self.RETRY_FOREVER
+        ):
             self.StopReactor()
             return
 
@@ -514,7 +523,9 @@ class LogReactor:
         self.cleanConnectionBreak()
 
         # check if we should reconnect
-        if not self.RETRY_ON_CONNECTION_ERROR or (self.amqp_broker_max_retries <= 0 and not self.RETRY_FOREVER):
+        if not self.RETRY_ON_CONNECTION_ERROR or (
+            self.amqp_broker_max_retries <= 0 and not self.RETRY_FOREVER
+        ):
             self.StopReactor()
             return
 
@@ -532,7 +543,7 @@ class LogReactor:
     def cleanConnectionBreak(self):
         # A clean way to tear down and stop
         logging.debug("Cleaning up connection")
-        yield self.chan.basic_cancel("sms_logger")
+        yield self.chan.basic_cancel(DEFAULT_CONSUMER_TAG)
         logging.debug("Closing channel")
         yield self.chan.channel_close()
         logging.debug("Closing channel 0")
