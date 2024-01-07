@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jasmin_mongo_logger"
-version = "0.2.1"
+version = "0.2.0.rc1"
 authors = [
   { name = "BlackOrder", email = "4302157+BlackOrder@users.noreply.github.com" },
 ]
@@ -16,7 +16,7 @@ classifiers = [
   "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
   "Operating System :: OS Independent",
 ]
-dependencies = ["twisted", "txamqp", "smpp.pdu3", "pymongo", "dnspython"]
+dependencies = ["twisted", "txamqp", "smpp.pdu3", "pymongo", "dnspython", "jasmin==0.11.0"]
 
 [project.scripts]
 jasminmongologd = "jasmin_mongo_logger:console_entry_point"
