@@ -55,19 +55,12 @@ DEFUALT_LOGGER_PRIVACY: bool = os.getenv(
     "1",
 )
 
-DEFAULT_LOG_LEVEL: str = os.getenv("JASMIN_MONGO_LOGGER_LOG_LEVEL", "INFO").upper()
+DEFAULT_LOG_LEVEL: str = os.getenv("JASMIN_MONGO_LOGGER_LOG_LEVEL", "WARNING").upper()
 DEFAULT_LOG_PATH: str = os.getenv("JASMIN_MONGO_LOGGER_LOG_PATH", "/var/log/jasmin")
 DEFAULT_LOG_FILE: str = os.getenv(
     "JASMIN_MONGO_LOGGER_LOG_FILE", "%s.log" % package_name
 )
 DEFAULT_LOG_ROTATE: str = os.getenv("JASMIN_MONGO_LOGGER_LOG_ROTATE", "midnight")
-DEFAULT_LOG_FORMAT: str = os.getenv(
-    "JASMIN_MONGO_LOGGER_LOG_FORMAT",
-    "%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  ** %(message)-55s **",
-)
-DEFAULT_LOG_DATE_FORMAT: str = os.getenv(
-    "JASMIN_MONGO_LOGGER_LOG_DATE_FORMAT", "%Y-%m-%d %H:%M:%S"
-)
 DEFAULT_FILE_LOGGING: bool = os.getenv(
     "JASMIN_MONGO_LOGGER_FILE_LOGGING", "True"
 ).lower() in ("yes", "true", "t", "1")
@@ -75,13 +68,21 @@ DEFAULT_CONSOLE_LOGGING: bool = os.getenv(
     "JASMIN_MONGO_LOGGER_CONSOLE_LOGGING", "True"
 ).lower() in ("yes", "true", "t", "1")
 
+DEFAULT_LOG_POSTER_FORMAT: str = "%(asctime)s |%(message)-66s|"
+DEFAULT_LOG_DEBUG_FORMAT: str = (
+    "%(asctime)s |%(levelname)8s| |%(module)-10s:%(lineno)5d| %(message)-55s |"
+)
+DEFAULT_LOG_FORMAT: str = "%(asctime)s |%(levelname)8s| %(message)-55s |"
+DEFAULT_LOG_DATE_FORMAT: str = "%Y-%m-%d %H:%M:%S"
+
 
 class LogReactor:
     def __init__(
         self,
         mongo_connection_string: str,
-        logger_database: str,
-        logger_collection: str,
+        mongo_database: str,
+        log_collection: str,
+        user_collection: str,
         logger_privacy: bool = DEFUALT_LOGGER_PRIVACY,
         amqp_broker_host: str = DEFAULT_AMQP_BROKER_HOST,
         amqp_broker_port: int = DEFAULT_AMQP_BROKER_PORT,
@@ -112,8 +113,9 @@ class LogReactor:
         self.AMQP_BROKER_HEARTBEAT = amqp_broker_heartbeat
 
         self.MONGO_CONNECTION_STRING = mongo_connection_string
-        self.MONGO_LOGGER_DATABASE = logger_database
-        self.MONGO_LOGGER_COLLECTION = logger_collection
+        self.MONGO_DATABASE = mongo_database
+        self.MONGO_LOG_COLLECTION = log_collection
+        self.MONGO_USER_COLLECTION = user_collection
 
         self.LOGGER_PRIVACY = logger_privacy
 
@@ -125,12 +127,12 @@ class LogReactor:
         self.CONSOLE_LOGGING = console_logging
 
         # Set up logging
-        self.LOG_FORMAT = os.getenv(
-            "JASMIN_MONGO_LOGGER_LOG_FORMAT", DEFAULT_LOG_FORMAT
+        self.LOG_FORMAT = (
+            DEFAULT_LOG_DEBUG_FORMAT
+            if self.LOG_LEVEL == "DEBUG"
+            else DEFAULT_LOG_FORMAT
         )
-        self.LOG_DATE_FORMAT = os.getenv(
-            "JASMIN_MONGO_LOGGER_LOG_DATE_FORMAT", DEFAULT_LOG_DATE_FORMAT
-        )
+        self.LOG_DATE_FORMAT = DEFAULT_LOG_DATE_FORMAT
 
         # Enable logging if console logging or file logging is enabled
         if self.FILE_LOGGING or self.CONSOLE_LOGGING:
@@ -145,7 +147,6 @@ class LogReactor:
                 consoleHandler = logging.StreamHandler(sys.stdout)
                 consoleHandler.setFormatter(logFormatter)
                 rootLogger.addHandler(consoleHandler)
-                logging.debug("Logging to console")
 
             # add the handler to the root logger if enabled
             if self.FILE_LOGGING:
@@ -159,41 +160,61 @@ class LogReactor:
                 )
                 fileHandler.setFormatter(logFormatter)
                 rootLogger.addHandler(fileHandler)
-                logging.debug("Logging to file: %s/%s" % (self.LOG_PATH, self.LOG_FILE))
         # Disable logging if console logging and file logging are disabled
         else:
             logging.disable(logging.CRITICAL)
 
     def startReactor(self):
-        logging.info("*********************************************")
-        logging.info("*********************************************")
-        logging.info(f"::Jasmin MongoDB Logger v{package_version}::")
+        current_log_level = logging.getLogger().getEffectiveLevel()
+        current_log_handlers_formatters = {}
+        for index in range(len(logging.getLogger().handlers)):
+            current_log_handlers_formatters[index] = (
+                logging.getLogger().handlers[index].formatter._fmt
+            )
+            logging.getLogger().handlers[index].formatter = logging.Formatter(
+                DEFAULT_LOG_POSTER_FORMAT, datefmt=self.LOG_DATE_FORMAT
+            )
+        logging.getLogger().setLevel(logging.INFO)
+        logging.info(
+            "=================================================================="
+        )
+        logging.info(f"  Jasmin MongoDB Logger v{package_version}")
         logging.info(" ")
-        logging.info("::Configuration::")
-        logging.info(f"AMQP Broker Host: {self.AMQP_BROKER_HOST}")
-        logging.info(f"AMQP Broker Port: {self.AMQP_BROKER_PORT}")
-        logging.info(f"AMQP Broker VHost: {self.AMQP_BROKER_VHOST}")
-        logging.info(f"AMQP Broker Username: {self.AMQP_BROKER_USERNAME}")
-        logging.info(f"AMQP Broker Password: {self.AMQP_BROKER_PASSWORD}")
-        logging.info(f"AMQP Broker Heartbeat: {self.AMQP_BROKER_HEARTBEAT}")
+        logging.info("  ::Configuration::")
+        logging.info(f"   L-> AMQP Broker Host          : {self.AMQP_BROKER_HOST}")
+        logging.info(f"   L-> AMQP Broker Port          : {self.AMQP_BROKER_PORT}")
+        logging.info(f"   L-> AMQP Broker VHost         : {self.AMQP_BROKER_VHOST}")
+        logging.info(f"   L-> AMQP Broker Username      : {self.AMQP_BROKER_USERNAME}")
+        logging.info(f"   L-> AMQP Broker Password      : {self.AMQP_BROKER_PASSWORD}")
+        logging.info(f"   L-> AMQP Broker Heartbeat     : {self.AMQP_BROKER_HEARTBEAT}")
         logging.info(
-            f"Retry on connection error: {'Yes' if self.RETRY_ON_CONNECTION_ERROR else 'No'}"
+            f"   L-> Retry on error            : {'Yes' if self.RETRY_ON_CONNECTION_ERROR else 'No'}"
         )
         logging.info(
-            f"Retry count: {'Forever' if self.RETRY_FOREVER else self.amqp_broker_max_retries}"
+            f"   L-> Retry count               : {'Forever' if self.RETRY_FOREVER else self.amqp_broker_max_retries}"
         )
-        logging.info(f"Retry timeout: {self.RETRY_DELAY}s")
-        logging.info(f"MongoDB Logs Database: {self.MONGO_LOGGER_DATABASE}")
-        logging.info(f"MongoDB Logs Collection: {self.MONGO_LOGGER_COLLECTION}")
-        logging.info(f"Log Level: {self.LOG_LEVEL}")
-        logging.info(f"Log Path: {self.LOG_PATH}")
-        logging.info(f"Log File: {self.LOG_FILE}")
-        logging.info(f"Log Rotate: {self.LOG_ROTATE}")
-        logging.info(f"File Logging: {'Enabled' if self.FILE_LOGGING else 'Disabled'}")
+        logging.info(f"   L-> Retry timeout             : {self.RETRY_DELAY}s")
+        logging.info(f"   L-> MongoDB Database          : {self.MONGO_DATABASE}")
+        logging.info(f"   L-> MongoDB Logs Collection   : {self.MONGO_LOG_COLLECTION}")
+        logging.info(f"   L-> MongoDB Users Collection  : {self.MONGO_USER_COLLECTION}")
+        logging.info(f"   L-> Log Level                 : {self.LOG_LEVEL}")
+        logging.info(f"   L-> Log Path                  : {self.LOG_PATH}")
+        logging.info(f"   L-> Log File                  : {self.LOG_FILE}")
+        logging.info(f"   L-> Log Rotate                : {self.LOG_ROTATE}")
         logging.info(
-            f"Console Logging: {'Enabled' if self.CONSOLE_LOGGING else 'Disabled'}"
+            f"   L-> File Logging              : {'Enabled' if self.FILE_LOGGING else 'Disabled'}"
         )
-        logging.info("*********************************************")
+        logging.info(
+            f"   L-> Console Logging           : {'Enabled' if self.CONSOLE_LOGGING else 'Disabled'}"
+        )
+        logging.info(
+            "=================================================================="
+        )
+        logging.getLogger().setLevel(current_log_level)
+        for index in current_log_handlers_formatters.keys():
+            logging.getLogger().handlers[index].formatter = logging.Formatter(
+                current_log_handlers_formatters[index], datefmt=self.LOG_DATE_FORMAT
+            )
 
         # Connect to RabbitMQ
         self.rabbitMQConnect()
@@ -203,8 +224,7 @@ class LogReactor:
         reactor.run()
 
     @inlineCallbacks
-    def gotConnection(self, conn, username, password):
-        logging.info("---------------------------------------------")
+    def gotConnection(self, conn: AMQClient, username: str, password: str):
         logging.info(f"Connected to broker, authenticating: {username}")
 
         yield conn.start({"LOGIN": username, "PASSWORD": password})
@@ -215,7 +235,7 @@ class LogReactor:
 
         # Needed to clean up the connection
         logging.debug("Cleaning up ...")
-        self.conn = conn
+        self.conn: AMQClient = conn
         self.chan = chan
 
         logging.debug("Opening channel")
@@ -265,7 +285,7 @@ class LogReactor:
         logging.debug("Connecting to MongoDB")
         mongosource = self._connect_to_mongo(
             connection_string=self.MONGO_CONNECTION_STRING,
-            database_name=self.MONGO_LOGGER_DATABASE,
+            database_name=self.MONGO_DATABASE,
         )
 
         # Retry connection if failed
@@ -278,7 +298,7 @@ class LogReactor:
             sleep(self.RETRY_DELAY)
             mongosource = self._connect_to_mongo(
                 connection_string=self.MONGO_CONNECTION_STRING,
-                database_name=self.MONGO_LOGGER_DATABASE,
+                database_name=self.MONGO_DATABASE,
             )
             self.mongo_max_retries -= 1
 
@@ -291,7 +311,8 @@ class LogReactor:
         logging.debug("MongoDB connection passed")
         # Wait for messages
         # This can be done through a callback ...
-        logging.debug("Starting message processing")
+        logging.info("_______________________________________________________")
+        logging.info("Starting message processing")
 
         try:
             logging.debug("Starting Daemon")
@@ -305,11 +326,19 @@ class LogReactor:
                 headers = props.get("headers")
                 message_id = props.get("message-id")
 
+                logging.debug("*******************************************************")
+                logging.debug("*******************************************************")
+                logging.debug("*******************************************************")
                 logging.debug("Processing message")
+                logging.debug("*******************************************************")
+                logging.debug("*******************************************************")
+                logging.debug("*******************************************************")
                 logging.debug(f"Message ID: {message_id}")
                 logging.debug(f"Routing key: {msg.routing_key}")
-                logging.debug(f"Headers: {headers}")
-                logging.debug(f"Payload: {msg.content.body}")
+                logging.debug(f"msg:")
+                logging.debug(msg)
+                logging.debug(f"Headers:")
+                logging.debug(headers)
                 logging.debug(" ")
 
                 if (
@@ -318,12 +347,15 @@ class LogReactor:
                 ):
                     # It's a submit_sm
                     logging.debug("It's a submit_sm***")
+                    logging.info("  -> SUB:    %s" % message_id)
                     created_at = headers.get("created_at")
                     priority = props.get("priority")
                     source = headers.get("source_connector")
                     route = msg.routing_key[10:]
                     pdu = pickle.loads(msg.content.body)
 
+                    logging.debug(f"Payload:")
+                    logging.debug(pdu)
                     logging.debug(f"message-id: {message_id}")
                     logging.debug(f"created_at: {created_at}")
                     logging.debug(f"priority: {priority}")
@@ -341,7 +373,7 @@ class LogReactor:
                         if ("headers" not in props or "expiration" not in headers)
                         else headers.get("expiration")
                     )
-                    status = pdu.status
+                    status = pdu.status.name
 
                     sms_pages = 1  # TODO: calculate sms_pages
                     short_message = None
@@ -419,17 +451,27 @@ class LogReactor:
                                 "UTF-8", "replace"
                             )
 
-                    private_short_message = '** %s byte content **' % len(short_message)
-                    private_binary_message = '** %s byte content **' % len(binary_message)
-                    private_short_message_decoded = '** %s char content **' % len(short_message_decoded)
+                    private_short_message = "** %s byte content **" % len(short_message)
+                    private_binary_message = "** %s byte content **" % len(
+                        binary_message
+                    )
+                    private_short_message_decoded = "** %s char content **" % len(
+                        short_message_decoded
+                    )
 
                     logging.debug(f"short_message: {short_message}")
                     logging.debug(f"short_message_binary: {binary_message}")
                     logging.debug(f"short_message_decoded: {short_message_decoded}")
 
-                    logging.debug(f"short_message: (privacy ON): {private_short_message}")
-                    logging.debug(f"short_message_binary: (privacy ON): {private_binary_message}")
-                    logging.debug(f"short_message_decoded: (privacy ON): {private_short_message_decoded}")
+                    logging.debug(
+                        f"short_message: (privacy ON): {private_short_message}"
+                    )
+                    logging.debug(
+                        f"short_message_binary: (privacy ON): {private_binary_message}"
+                    )
+                    logging.debug(
+                        f"short_message_decoded: (privacy ON): {private_short_message_decoded}"
+                    )
 
                     logging.debug(f"destination_addr: {destination_addr}")
                     logging.debug(f"source_addr: {source_addr}")
@@ -487,132 +529,155 @@ class LogReactor:
                     for key, value in bill.items():
                         logging.debug(f"\t{key}: {value}")
 
+                    # MongoDB document
+                    log_data: dict = {
+                        "created_at": created_at,
+                        "priority": priority,
+                        "source": source,
+                        "route": route,
+                        "destination_addr": destination_addr,
+                        "source_addr": source_addr,
+                        "schedule_delivery_time": schedule_delivery_time,
+                        "validity_period": validity_period,
+                        "data_coding": data_coding,
+                        "validity": validity,
+                        "status": status,
+                        "page_count": sms_pages,
+                        "short_message": short_message
+                        if not self.LOGGER_PRIVACY
+                        else private_short_message,
+                        "binary_message": binary_message
+                        if not self.LOGGER_PRIVACY
+                        else private_binary_message,
+                        "short_message_decoded": short_message_decoded
+                        if not self.LOGGER_PRIVACY
+                        else private_short_message_decoded,
+                        "bill": bill,
+                    }
 
-                    # Save message in MongoDB
+                    # update user balance
+                    logging.debug("Updating user balance in MongoDB")
+                    user_data = {
+                        "mt_messaging_cred quota balance": bill.get("user")
+                        .get("quota")
+                        .get("balance"),
+                        "mt_messaging_cred quota sms_count": bill.get("user")
+                        .get("quota")
+                        .get("submit_sm_count"),
+                    }
+
+                    # replace any None value with 'None' string
+                    log_data = self.replace_none(log_data)
+                    user_data = self.replace_none(user_data)
+
+                    # Fix any key that contains '$' or '.' or '-'
+                    log_data = self.fix_keys(log_data)
+                    user_data = self.fix_keys(user_data)
+
+                    # Save message in MongoDB log collection
                     logging.debug("Saving message in MongoDB")
                     mongosource.update_one(
-                        module=self.MONGO_LOGGER_COLLECTION,
+                        module=self.MONGO_LOG_COLLECTION,
                         sub_id=message_id,
-                        data={
-                            "created_at": created_at,
-                            "priority": priority,
-                            "source":source,
-                            "route":route,
-                            "destination_addr": destination_addr,
-                            "source_addr": source_addr,
-                            "schedule_delivery_time": schedule_delivery_time,
-                            "validity_period": validity_period,
-                            "data_coding":data_coding,
-                            "validity":validity,
-                            "status":status,
-                            "page_count": sms_pages,
-                            "short_message": short_message if not self.LOGGER_PRIVACY else private_short_message,
-                            "binary_message": binary_message if not self.LOGGER_PRIVACY else private_binary_message,
-                            "short_message_decoded": short_message_decoded if not self.LOGGER_PRIVACY else private_short_message_decoded,
-                            "bill": bill,
-                        },
+                        data=log_data,
                     )
+
+                    # Update user balance in MongoDB
+                    logging.debug("Updating user balance in MongoDB")
+                    mongosource.update_one(
+                        module=self.MONGO_USER_COLLECTION,
+                        sub_id=bill.get("user").get("_id"),
+                        data=user_data,
+                    )
+
                 elif msg.routing_key[:15] == "submit.sm.resp.":
                     # It's a submit_sm_resp
                     logging.debug("It's a submit_sm_resp")
-
+                    logging.info("  -> ACK:    %s" % message_id)
+                    created_at = headers.get("created_at")
                     pdu = pickle.loads(msg.content.body)
 
-                    # get qmsg from MongoDB
-                    logging.debug("Getting message info from MongoDB")
-                    qmsg = mongosource.get_one_submodule(
-                        module=self.MONGO_LOGGER_COLLECTION,
-                        sub_id=props["message-id"],
-                    )
+                    logging.debug(f"Payload:")
+                    logging.debug(pdu)
 
-                    # Check if qmsg is None
-                    if qmsg is None:
-                        logging.error(
-                            f"resp to an unknown: {props['message-id']}"
-                        )
-                        chan.basic_ack(delivery_tag=msg.delivery_tag)
-                        continue
+                    status = pdu.status.name
+                    logging.debug(f"message-id: {message_id}")
+                    logging.debug(f"created_at: {created_at}")
+                    logging.debug(f"status: {status}")
 
-                    if qmsg["source_addr"] is None:
-                        qmsg["source_addr"] = ""
+                    # MongoDB document
+                    data: dict = {
+                        "ack": {
+                            "created_at": created_at,
+                            "status": status,
+                        }
+                    }
 
-                    if qmsg["destination_addr"] is None:
-                        qmsg["destination_addr"] = ""
+                    # replace any None value with 'None' string
+                    data = self.replace_none(data)
 
-                    if qmsg["short_message"] is None:
-                        qmsg["short_message"] = ""
-
-                    # Update message status
-                    logging.debug("Updating message status in MongoDB")
-                    logging.debug("current msg object: ")
-                    logging.debug(qmsg)
-                    logging.debug("received submit_sm_resp: ")
-                    logging.debug(pdu.status)
+                    # Fix any key that contains '$' or '.' or '-'
+                    data = self.fix_keys(data)
 
                     # Update message status
                     logging.debug("Updating message info in MongoDB")
                     mongosource.update_one(
-                        module=self.MONGO_LOGGER_COLLECTION,
-                        sub_id=props["message-id"],
-                        data={
-                            "source_addr": qmsg["source_addr"],
-                            "rate": qmsg["rate"],
-                            "pdu_count": qmsg["pdu_count"],
-                            "charge": qmsg["charge"],
-                            "destination_addr": qmsg["destination_addr"],
-                            "short_message": qmsg["short_message"],
-                            "status": pdu.status,
-                            "uid": qmsg["uid"],
-                            "created_at": props["headers"]["created_at"],
-                            "binary_message": qmsg["binary_message"],
-                            "routed_cid": qmsg["routed_cid"],
-                            "source_connector": qmsg["source_connector"],
-                            "status_at": props["headers"]["created_at"],
-                        },
+                        module=self.MONGO_LOG_COLLECTION,
+                        sub_id=message_id,
+                        data=data,
                     )
 
                 elif msg.routing_key[:12] == "dlr_thrower.":
                     # It's a dlr_thrower
                     logging.debug("It's a dlr_thrower")
+                    logging.info(
+                        "  -> DLR-L%s: %s" % (headers.get("level"), message_id)
+                    )
+                    logging.debug(f"Payload:")
+                    logging.debug(msg.content.body)
 
-                    if props["headers"]["message_status"][:5] == "ESME_":
-                        # Ignore dlr from submit_sm_resp
-                        logging.debug("Ignoring dlr from submit_sm_resp")
-                        chan.basic_ack(delivery_tag=msg.delivery_tag)
-                        continue
+                    logging.debug(f"message-id: {message_id}")
+                    dlr = deepcopy(headers)
 
-                    # It's a dlr
-                    logging.debug("It's a dlr")
-                    
+                    dlr["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    logging.debug(f"dlr: {dlr}")
+
+                    # if privacy is enabled and text is not empty or None, replace it with a privacy message
+                    if self.LOGGER_PRIVACY:
+                        if dlr.get("text") is not None and dlr.get("text") != "":
+                            dlr["text"] = "** %s char content **" % len(dlr.get("text"))
+
                     # get qmsg from MongoDB
                     logging.debug("Getting message info from MongoDB")
                     qmsg = mongosource.get_one_submodule(
-                        module=self.MONGO_LOGGER_COLLECTION,
-                        sub_id=props["message-id"],
+                        module=self.MONGO_LOG_COLLECTION,
+                        sub_id=message_id,
                     )
-                    
-                    # Check if qmsg is None
+
+                    # if qmsg is None, create a new one
                     if qmsg is None:
-                        logging.error(
-                            f"dlr to an unknown: {props['message-id']}"
-                        )
-                        chan.basic_ack(delivery_tag=msg.delivery_tag)
-                        continue
+                        qmsg = {}
+
+                    qmsgDlrs: list[dict] = qmsg.pop("dlr", [])
+                    qmsgDlrs.append(dlr)
+
+                    # MongoDB document
+                    data: dict = {
+                        "dlr": qmsgDlrs,
+                    }
+
+                    # replace any None value with 'None' string
+                    data = self.replace_none(data)
+
+                    # Fix any key that contains '$' or '.' or '-'
+                    data = self.fix_keys(data)
 
                     # Update message status
                     logging.debug("Updating message status in MongoDB")
-                    logging.debug("current msg object: ")
-                    logging.debug(qmsg)
-                    logging.debug("received dlr: ")
-                    logging.debug(props["headers"]["message_status"])
-
                     mongosource.update_one(
-                        module=self.MONGO_LOGGER_COLLECTION,
-                        sub_id=props["message-id"],
-                        data={
-                            "status": props["headers"]["message_status"],
-                            "status_at": datetime.now(),
-                        },
+                        module=self.MONGO_LOG_COLLECTION,
+                        sub_id=message_id,
+                        data=data,
                     )
 
                 else:
@@ -655,6 +720,43 @@ class LogReactor:
         except KeyboardInterrupt:
             logging.critical("User Terminated")
             self.StopReactor()
+
+    # Function to replace None values with 'None' string. could be dict or list and nested
+    def replace_none(self, data):
+        if isinstance(data, list):
+            for i, v in enumerate(data):
+                if v is None:
+                    data[i] = "None"
+                elif isinstance(v, (list, dict)):
+                    self.replace_none(v)
+        elif isinstance(data, dict):
+            for k, v in data.items():
+                if v is None:
+                    data[k] = "None"
+                elif isinstance(v, (list, dict)):
+                    self.replace_none(v)
+        return data
+
+    def fix_keys(self, data):
+        if isinstance(data, list):
+            for i, v in enumerate(data):
+                if isinstance(v, (list, dict)):
+                    self.fix_keys(v)
+        elif isinstance(data, dict):
+            for k, v in list(data.items()):  # Create a copy of items
+                if isinstance(k, str):
+                    new_key = k
+                    if k.startswith("$"):
+                        new_key = new_key.replace("$", "dollar_")
+                    if "." in k:
+                        new_key = new_key.replace(".", "_")
+                    if "-" in k:
+                        new_key = new_key.replace("-", "_")
+                    if new_key != k:
+                        data[new_key] = data.pop(k)
+                if isinstance(v, (list, dict)):
+                    self.fix_keys(v)
+        return data
 
     def _connect_to_mongo(
         self, connection_string: str, database_name: str
@@ -727,7 +829,7 @@ class LogReactor:
 
     def rabbitMQConnect(self):
         # Connect to RabbitMQ
-        logging.debug("---------------------------------------------")
+        logging.debug("-------------------------------------------------------")
         logging.debug("Creating a new RabbitMQ connection")
         host = self.AMQP_BROKER_HOST
         port = self.AMQP_BROKER_PORT
@@ -882,12 +984,30 @@ def console_entry_point():
     )
 
     parser.add_argument(
-        "--db",
+        "--database",
         type=str,
-        dest="logger_database",
-        required=os.getenv("MONGO_LOGGER_DATABASE") is None,
-        default=os.getenv("MONGO_LOGGER_DATABASE"),
-        help=f"MongoDB Logs Database (Default: ** Required **)",
+        dest="mongo_database",
+        required=os.getenv("MONGO_DATABASE") is None,
+        default=os.getenv("MONGO_DATABASE"),
+        help=f"MongoDB Database (Default: ** Required **)",
+    )
+
+    parser.add_argument(
+        "--log-collection",
+        type=str,
+        dest="log_collection",
+        required=os.getenv("MONGO_LOG_COLLECTION") is None,
+        default=os.getenv("MONGO_LOG_COLLECTION"),
+        help=f"MongoDB Logs Collection (Default: ** Required **)",
+    )
+
+    parser.add_argument(
+        "--user-collection",
+        type=str,
+        dest="user_collection",
+        required=os.getenv("MONGO_USER_COLLECTION") is None,
+        default=os.getenv("MONGO_USER_COLLECTION"),
+        help=f"MongoDB Users Collection (Default: ** Required **)",
     )
 
     parser.add_argument(
@@ -897,15 +1017,6 @@ def console_entry_point():
         default=DEFUALT_LOGGER_PRIVACY,
         action=argparse.BooleanOptionalAction,
         help=f"Enable SMS Privacy (default:{DEFUALT_LOGGER_PRIVACY})",
-    )
-
-    parser.add_argument(
-        "--collection",
-        type=str,
-        dest="logger_collection",
-        required=os.getenv("MONGO_LOGGER_COLLECTION") is None,
-        default=os.getenv("MONGO_LOGGER_COLLECTION"),
-        help=f"MongoDB Logs Collection (Default: ** Required **)",
     )
 
     parser.add_argument(

@@ -1,4 +1,4 @@
-from .logreactor import console_entry_point
+from .reactor import console_entry_point
 
 
 if __name__ == "__main__":

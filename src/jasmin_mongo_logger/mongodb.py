@@ -37,7 +37,7 @@ class MongoDB:
             logging.critical("Failed to connect to MongoDB")
             return False
 
-    def get_one_module(self, module: str) -> dict[str, str | float | bool]:
+    def get_one_module(self, module: str) -> dict[str, str | float | bool | dict]:
         """ Get all data from a module """
         data: dict[str, str | float | bool] = {}
         cursor = self.database[module].find()
@@ -48,7 +48,7 @@ class MongoDB:
 
         return data
 
-    def get_one_submodule(self, module: str, sub_id: str) -> dict[str, str | float | bool]:
+    def get_one_submodule(self, module: str, sub_id: str) -> dict[str, str | float | bool | dict]:
         """ Get all data from a submodule """
         return self.database[module].find_one({"_id": sub_id})
 
